@@ -2,6 +2,10 @@
 
 A premium, responsive website for Dheera Creatives, a handcrafted Aari embroidery and custom stitching brand.
 
+> The public frontend lives in `public/` and is served unchanged by the NestJS app. The
+> admin dashboard is a separate React app in `admin/`. Paths below are relative to the
+> project root unless stated otherwise.
+
 ## Project Overview
 
 This website showcases handcrafted Aari embroidery, custom blouse designs, and personalized stitching services. Built with vanilla HTML5, CSS3, and JavaScript, the site focuses on elegance, craftsmanship, and converting visitors into custom order enquiries.
@@ -20,48 +24,90 @@ This website showcases handcrafted Aari embroidery, custom blouse designs, and p
 
 ## Tech Stack
 
+- NestJS (TypeScript) serving the site and providing the backend
+- PostgreSQL 17 with Prisma ORM 6
+- React + TypeScript + Vite admin dashboard (`admin/`)
 - HTML5 (Semantic)
 - CSS3 (Custom Properties, Flexbox, CSS Grid)
-- Vanilla JavaScript (ES6+)
-- No frameworks or build systems
+- Vanilla JavaScript (ES6+) for the public site
+- No build step for the public site; the admin app has its own
 
 ## Project Structure
 
 ```
 dheera_creatives_demo1/
-├── index.html          # Main HTML file
-├── styles.css          # All styles
-├── script.js           # Interactive functionality
-├── config.js           # Centralized configuration
-├── robots.txt          # SEO robots file
-├── sitemap.xml         # SEO sitemap
-├── manifest.json       # PWA manifest
-├── assets/
-│   ├── aari-embroidery-hero.webp         # Unused legacy hero (900x675, 4:3)
-│   ├── aari-embroidery-about.webp        # About section image (810x675, 6:5)
-│   ├── aari-embroidery-contact.webp      # Contact card image (900x563, 16:10)
-│   ├── embroidery/                       # Full gallery photos + 640px previews
-│   │   ├── aari-embroidery-design-01.webp ... -24.webp   # full size (lightbox)
-│   │   └── thumbs/
-│   │       └── aari-embroidery-design-01.webp ... -24.webp  # grid previews (640px)
-│   ├── products/                         # Collection card images (720x540, 4:3)
-│   │   └── aari-embroidery-collection-1.webp ... -6.webp
-│   ├── logo/                             # Brand logo variations
-│   │   ├── primary-horizontal.jpg        # Used in the site header
-│   │   ├── secondary-stacked.jpg         # Supplied master artwork
-│   │   ├── secondary-stacked-trimmed.jpg # Used in the footer (trimmed)
-│   │   ├── wordmark.jpg                  # Reserved (not currently placed)
-│   │   ├── favicon.png                   # Source for the icon set (round, transparent)
-│   │   └── og-image.jpg                  # Social share image (1200x630)
-│   └── icons/                            # Generated favicon / PWA icons (round)
-│       ├── favicon.ico                   # 16 / 32 / 48
-│       ├── favicon-16.png                # round, transparent corners
-│       ├── favicon-32.png                # round, transparent corners
-│       ├── favicon-48.png                # round (also embedded in the .ico)
-│       ├── apple-touch-icon.png          # 180x180, opaque square (iOS needs this)
-│       ├── icon-192.png                  # PWA, round
-│       └── icon-512.png                  # PWA, round
-└── README.md           # This file
+├── public/                 # Public website, served as-is by NestJS
+│   ├── index.html          # Main HTML file
+│   ├── styles.css          # All styles
+│   ├── script.js           # Interactive functionality
+│   ├── config.js           # Centralized configuration
+│   ├── robots.txt          # SEO robots file
+│   ├── sitemap.xml         # SEO sitemap
+│   ├── manifest.json       # PWA manifest
+│   └── assets/
+│       ├── aari-embroidery-about.webp        # About section image
+│       ├── aari-embroidery-contact.webp      # Contact card image
+│       ├── aari-embroidery-hero.webp         # Unused legacy hero
+│       ├── embroidery/                       # 24 gallery photos
+│       │   └── thumbs/                       # 640px grid previews
+│       ├── products/                         # 6 collection card images
+│       ├── logo/                             # Brand artwork + og-image
+│       └── icons/                            # Favicon / PWA icons
+├── admin/                  # Separate React + Vite admin dashboard
+│   ├── index.html          # Admin shell (noindex)
+│   ├── vite.config.ts      # Dev server, /api + /uploads proxy, Vitest config
+│   ├── src/
+│   │   ├── api/            # fetch client (cookies + CSRF), auth, catalogue
+│   │   ├── components/     # layout, route guards, dialogs, uploader
+│   │   ├── hooks/          # AuthProvider, ToastProvider
+│   │   ├── pages/          # login, dashboard, list, form, 404
+│   │   ├── test/           # Vitest + Testing Library suites
+│   │   ├── App.tsx
+│   │   └── styles.css      # Design system (CSS variables)
+│   └── .env.example        # Optional VITE_API_BASE_URL
+├── uploads/                # Runtime image storage (git-ignored)
+│   ├── products/           # Uploaded product images
+│   └── services/           # Uploaded service images
+├── src/                    # NestJS application
+│   ├── main.ts             # Bootstraps Nest, CORS and static serving
+│   ├── app.module.ts
+│   ├── config/
+│   │   └── env.validation.ts   # Joi validation of env vars
+│   ├── auth/
+│   │   ├── auth.module.ts      # Throttler config; exports AuthService + guard
+│   │   ├── auth.controller.ts  # login / me / logout endpoints
+│   │   ├── auth.service.ts     # bcrypt check, session create/validate/delete
+│   │   ├── auth.cookies.ts     # cookie names, options, CSRF helpers
+│   │   ├── auth.types.ts       # SafeAdmin shape + request typing
+│   │   ├── dto/login.dto.ts
+│   │   ├── guards/admin-auth.guard.ts
+│   │   └── decorators/current-admin.decorator.ts
+│   ├── common/                 # slug generation, pagination, query DTOs
+│   ├── products/               # public + admin product CRUD
+│   ├── services/               # public + admin service CRUD
+│   ├── uploads/                # guarded upload endpoint, storage, validation
+│   └── prisma/
+│       ├── prisma.module.ts    # Global database module
+│       └── prisma.service.ts   # Reusable PrismaClient wrapper
+├── prisma/
+│   ├── schema.prisma       # Admin, Session, Product and Service models
+│   ├── seed.ts             # Idempotent admin seed (bcrypt)
+│   └── migrations/         # SQL migrations applied with migrate deploy
+├── test/
+│   ├── app.e2e-spec.ts     # Static delivery and 404 tests
+│   ├── database.e2e-spec.ts # Real PostgreSQL schema checks
+│   ├── auth.e2e-spec.ts    # Login, sessions, CSRF and rate limiting
+│   ├── products.e2e-spec.ts # Public + admin product API
+│   ├── services.e2e-spec.ts # Public + admin service API
+│   ├── uploads.e2e-spec.ts  # Upload validation, storage and cleanup
+│   └── helpers/             # Shared test app / session helpers
+├── .env.example            # Required variables, no secrets
+├── package.json
+├── nest-cli.json
+├── tsconfig.json
+├── tsconfig.build.json
+├── tsconfig.test.json
+└── README.md
 ```
 
 > `assets/logo.svg` and `assets/favicon.svg` are earlier placeholder marks that are no
@@ -157,7 +203,7 @@ JavaScript, so it sees the resolved values — search/structured data stays sing
 Discord, iMessage — read raw HTML and **never run JavaScript**. A config-driven value is
 therefore invisible to them, and no pure-static site can work around that: making it dynamic
 would need server-side templating or a build step that rewrites HTML at deploy time, neither
-of which exists here (GitHub Pages serves the files as-is). So three spots are literal URLs,
+of which is implemented yet (NestJS currently serves the frontend files as-is). So three spots are literal URLs,
 all currently pointing at `https://dheera.digimaraa.in`:
 
 | Where | Value | Note |
@@ -404,9 +450,292 @@ What still needs real content before launch:
 | `assets/testimonials/` | Empty — add authentic customer photos here |
 
 
+## Database
+
+PostgreSQL 17, accessed through Prisma ORM 6. Prisma 7 and later are ESM-only, while this app compiles to CommonJS, so the last CommonJS-compatible major is used.
+
+Set `DATABASE_URL` in `.env` (see `.env.example`). It is validated at boot: the app refuses to start if it is missing or is not a `postgresql://` URL.
+
+| Model | Table | Notes |
+|---|---|---|
+| `Admin` | `admins` | UUID id, unique `username` and `email`, bcrypt `passwordHash` |
+| `Session` | `sessions` | UUID id, unique `tokenHash` (SHA-256 hex), `adminId` FK with `ON DELETE CASCADE`, `expiresAt` |
+| `Product` | `products` | UUID id, unique `slug`, optional `Decimal(10,2)` price, `imageUrl` + nullable `imageFilename`, indexes on `category` and `(isActive, displayOrder)` |
+| `Service` | `services` | same shape as `Product` |
+
+Both content tables also carry `CHECK` constraints that reject negative prices.
+
+Apply migrations and generate the client:
+
+```bash
+npm run db:migrate     # prisma migrate deploy
+npm run db:generate    # prisma generate (also runs on npm install)
+```
+
+Seed the first admin. Credentials are read from the environment and never stored in the repo:
+
+```powershell
+$env:ADMIN_USERNAME="admin"
+$env:ADMIN_EMAIL="admin@example.com"
+$env:ADMIN_PASSWORD="a-password-of-12-or-more-characters"
+npm run db:seed
+```
+
+Re-running the seed refreshes the password hash for the same account and never creates a duplicate. It refuses to overwrite an account whose username or email differs.
+
+### Reset an admin password
+
+If an existing admin's password is unknown, refresh it without creating a duplicate or touching other data:
+
+```powershell
+$env:ADMIN_USERNAME="admin"
+$env:ADMIN_EMAIL="admin@example.com"
+$env:ADMIN_PASSWORD="a-password-of-12-to-128-characters"
+npm run db:reset-admin
+Remove-Item Env:ADMIN_USERNAME,Env:ADMIN_EMAIL,Env:ADMIN_PASSWORD
+```
+
+The script hashes the password with bcrypt cost 12, matching the auth service. It updates the admin matching the username or email, or creates one if neither exists. It aborts without writing if the username and email belong to two different admins, never deletes admins, and never prints the password or hash.
+
+`prisma migrate dev` needs a shadow database, which the `dheera_app` role cannot create. New migrations are generated with `prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script` (or `--from-migrations` for later changes) and applied with `npm run db:migrate`.
+
+## Admin Authentication
+
+Server-side session authentication for the admin API. The public site stays public: only routes that explicitly use `AdminAuthGuard` require a session.
+
+| Endpoint | Method | Auth | Purpose |
+|---|---|---|---|
+| `/api/auth/login` | POST | public | `{ "identifier": "<username or email>", "password": "..." }` → `{ "admin": {...} }` + cookies |
+| `/api/auth/me` | GET | session | Current admin's safe fields (`id`, `username`, `email`, `createdAt`, `updatedAt`) |
+| `/api/auth/logout` | POST | session + CSRF | Deletes the session row and clears both cookies |
+
+There is deliberately **no registration endpoint**. Admins are created with `npm run db:seed` and an existing password can be repaired with `npm run db:reset-admin`.
+
+### Session and CSRF contract (needed by the Phase 5 admin UI)
+
+- `dheera_session` — opaque 256-bit random token, `HttpOnly`, `SameSite=Lax`, `Secure` when `NODE_ENV=production`, `Path=/`. The database stores only its SHA-256 hash in `sessions.tokenHash`.
+- `dheera_csrf` — the CSRF token, readable by JavaScript (not `HttpOnly`), same flags otherwise.
+- **Every non-GET/HEAD/OPTIONS request to a guarded route must send the CSRF cookie value back in an `x-csrf-token` header.** Double-submit is enforced inside `AdminAuthGuard`, so a guarded route cannot accidentally skip it.
+- Session lifetime is `SESSION_TTL_HOURS` (default `8`, max `720`). Expired sessions are rejected and deleted on the next request.
+- The browser never needs `localStorage`/`sessionStorage`; cookies carry the session.
+
+### Protecting new admin routes
+
+```ts
+import { UseGuards } from '@nestjs/common';
+import { AdminAuthGuard } from '../auth/guards/admin-auth.guard';
+import { CurrentAdmin } from '../auth/decorators/current-admin.decorator';
+import { SafeAdmin } from '../auth/auth.types';
+
+@UseGuards(AdminAuthGuard)
+@Get('api/admin/products')
+list(@CurrentAdmin() admin: SafeAdmin) { ... }
+```
+
+`AuthModule` exports `AuthService` and `AdminAuthGuard`; import `AuthModule` in any module that needs them.
+
+### Security measures in place
+
+- bcrypt verification (`bcryptjs`, cost 12). A dummy hash is compared when the account does not exist so response time does not reveal valid usernames.
+- One generic `401 Invalid credentials` message for unknown user and wrong password. `passwordHash` is never selected or returned.
+- Login is rate limited to **5 attempts per 60 s per IP** (`@nestjs/throttler`, in-memory).
+- Request bodies are validated and unknown fields rejected by the global `ValidationPipe`.
+- CORS is restricted to the explicit origins in `ADMIN_FRONTEND_ORIGIN` (comma-separated) with `credentials: true`; there is no wildcard origin and no admin registration route.
+- Cookies are `HttpOnly`, `SameSite=Lax` and `Secure` in production; session tokens are stored hashed.
+
+### Deployment caveat: rate limiting behind a reverse proxy
+
+The limiter keys on the client IP, which Nest reads from the socket. Behind nginx/Cloudflare every request appears to come from the proxy, so all admins share one bucket. Set Express `trust proxy` (in `src/main.ts`) to the number of proxies in front of the app, or the platform's equivalent, before deploying behind one. The limiter is also per-process: multiple instances each get their own counters.
+
+
+## Admin Dashboard
+
+A separate React + TypeScript + Vite app in `admin/` manages the product and service
+catalogue. It uses the same session cookies and CSRF contract as the API — there is no
+second auth system and no token is ever written to `localStorage`/`sessionStorage`.
+
+The public website in `public/` is still served by NestJS and the admin app is built
+and hosted separately. The Collections grid on the homepage now loads active products
+and services from `GET /api/products` and `GET /api/services`; the six cards in
+`index.html` remain as the no-JS / API-failure fallback.
+
+Both catalogue pages support drag-and-drop ordering from a per-row handle. The new order
+is saved with `PATCH /api/admin/{products|services}/reorder`; sorting is only enabled when
+the whole catalogue is visible on one page (no search, category or status filter, and
+sorted by `displayOrder`), so a filtered subset is never submitted as the full order.
+Products and services keep independent order scales.
+
+### Running the admin app
+
+```bash
+cd admin
+npm install
+npm run dev        # http://localhost:5173
+```
+
+The Vite dev server proxies `/api` and `/uploads` to `http://localhost:3000`, so start the
+NestJS server first (`npm run start:dev` in the project root). If the API lives on another
+origin, set `VITE_API_BASE_URL` (see `admin/.env.example`).
+
+Production build:
+
+```bash
+cd admin
+npm run build      # tsc --noEmit && vite build → admin/dist/
+```
+
+Serve `admin/dist/` from any static host, or behind the same reverse proxy as the API.
+When the admin build is served from a different origin than the API, that origin must be
+listed in `ADMIN_FRONTEND_ORIGIN` for credentialed CORS to work.
+
+Sign in at `/login` with the account created by `npm run db:seed`. There is no public
+registration.
+
+### Environment variables
+
+| Variable | Where | Default | Purpose |
+|---|---|---|---|
+| `DATABASE_URL` | server `.env` | — | PostgreSQL connection string (required) |
+| `SESSION_TTL_HOURS` | server `.env` | `8` | Admin session lifetime, max 720 |
+| `ADMIN_FRONTEND_ORIGIN` | server `.env` | `http://localhost:5173` | Comma-separated CORS allowlist for credentialed requests |
+| `UPLOAD_DIR` | server `.env` | `uploads` | Directory for uploaded images (relative to the process cwd) |
+| `VITE_API_BASE_URL` | `admin/.env` | empty | Absolute API origin; empty means "same origin / Vite proxy" |
+
+`.env` files are git-ignored; only the `.env.example` files are committed.
+
+### Image storage
+
+Uploaded images are stored on the local filesystem, not in PostgreSQL and not in a cloud
+service:
+
+```
+uploads/
+├── products/<uuid>.<ext>
+└── services/<uuid>.<ext>
+```
+
+- `UPLOAD_DIR` selects the root (default `uploads`, relative to the working directory).
+- Files are written with a random UUID filename and the extension detected from the file
+  signature. Original filenames are never used, so path traversal and executable
+  extensions cannot be smuggled in.
+- The database stores the public path (`imageUrl`, e.g. `/uploads/products/<uuid>.png`) and
+  the stored filename (`imageFilename`). No binary data is stored in PostgreSQL.
+- NestJS serves `uploads/` at `/uploads` with `index: false`, `redirect: false`,
+  `dotfiles: 'deny'`, a 7-day cache, `X-Content-Type-Options: nosniff` and a restrictive
+  CSP, so the directory cannot be listed or executed.
+
+**Upload rules:** single image per request, 5 MB maximum, JPEG/PNG/WebP/AVIF only. The MIME
+type and the magic bytes are both checked; SVG, HTML and executables are rejected with
+`400`, and oversized files with `413`.
+
+**Image lifecycle:**
+
+1. The admin form uploads the new image (`POST /api/admin/uploads/{products|services}`).
+2. It then creates or updates the record with the returned `imageUrl`/`imageFilename`.
+3. On update, the previous file is deleted after the database write succeeds.
+4. If the database write fails, the just-uploaded file is deleted again.
+5. On record delete, the image file is removed after the row is gone.
+6. Cleanup failures are logged and never block an edit or delete; a missing file is not an
+   error.
+
+`uploads/` is git-ignored (only `.gitkeep` is tracked). Back it up with the database.
+
+### Catalogue API
+
+Public (active records only):
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/api/products` | GET | Paginated active products (`page`, `pageSize`, `search`, `category`) |
+| `/api/products/:slug` | GET | One active product by slug |
+| `/api/services` | GET | Paginated active services |
+| `/api/services/:slug` | GET | One active service by slug |
+
+Admin (all behind `AdminAuthGuard`; state-changing requests also need `x-csrf-token`):
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/api/admin/products` | GET | List with `page`, `pageSize`, `search`, `category`, `isActive`, `sortBy`, `sortDir` |
+| `/api/admin/products/:id` | GET | One product by UUID |
+| `/api/admin/products` | POST | Create (`409` on duplicate slug, `400` on negative price) |
+| `/api/admin/products/:id` | PATCH | Update |
+| `/api/admin/products/:id` | DELETE | Delete record + image |
+| `/api/admin/products/reorder` | PATCH | Bulk `displayOrder` update: `{ "items": [{ "id": "<uuid>", "displayOrder": 1 }] }`; atomic, `400` on duplicate ids/positions, `404` on unknown ids |
+| `/api/admin/services/reorder` | PATCH | Same, for services |
+| `/api/admin/services…` | — | Same shape as products |
+| `/api/admin/uploads/products` | POST | Multipart `image` field; returns `{ imageUrl, imageFilename }` |
+| `/api/admin/uploads/services` | POST | Same, for services |
+
+DTOs are validated globally; unknown fields are rejected. `slug` is generated from the
+name when omitted and must be unique per table.
+
+### CORS and cookies
+
+`src/main.ts` enables CORS only for the explicit origins in `ADMIN_FRONTEND_ORIGIN`
+(comma-separated) with `credentials: true`. There is no wildcard origin, and the public
+website is unaffected because it is same-origin.
+
+- `SameSite=Lax` cookies work for `localhost:5173 → localhost:3000` and for same-site
+  subdomains (e.g. `admin.example.com → api.example.com`).
+- A fully cross-site admin host (different registrable domain) would need
+  `SameSite=None; Secure` cookies, which means HTTPS and a considered CSRF posture. Prefer
+  keeping the admin on the same site as the API.
+- `NODE_ENV=production` marks cookies `Secure`, so production must be served over HTTPS.
+
+### Persistent storage
+
+`uploads/` must live on persistent storage:
+
+- **Docker:** mount a named volume at the upload directory, otherwise images disappear on
+  redeploy.
+- **Serverless / ephemeral platforms:** the local filesystem is wiped between invocations.
+  Local storage is not suitable there without a persistent volume; moving to object storage
+  would be a separate change.
+
+Uploads happen when the form is submitted, but a client that uploads and never submits can
+leave an orphan file. A periodic sweep of files not referenced by any row is the fix if
+that becomes a problem.
+
+### Admin tests
+
+```bash
+cd admin
+npm test           # Vitest + Testing Library
+npm run build      # type-check + production build
+```
+
+The suites cover the API client (cookies, CSRF echo, 401 handling), login validation and
+errors, protected routes and session restoration, list filtering/toggle/delete, and the
+form upload/create/update flow. They mock the API, so no database is needed.
+
+
 ## Development
 
-To run locally, simply open `index.html` in a web browser. No server or build step required.
+Prerequisites: Node.js 20.11 or newer (tested on Node 24) and a reachable PostgreSQL database.
+
+```bash
+npm install
+npm run start:dev    # http://localhost:3000
+```
+
+Production build and run:
+
+```bash
+npm run build
+npm run start:prod
+```
+
+Set `PORT` to change the listening port (default `3000`) and `SESSION_TTL_HOURS` to change the admin session lifetime (default `8`). `NODE_ENV=production` switches the auth cookies to `Secure`, so production must be served over HTTPS. `ADMIN_FRONTEND_ORIGIN` sets the credentialed CORS allowlist, and `UPLOAD_DIR` sets where uploaded images are written (default `uploads`).
+
+The server resolves `public/` relative to `dist/`, so deploy `public/` alongside `dist/` (running from the project root is enough). Build and serve the admin app separately (`cd admin && npm run build`).
+
+Run the end-to-end tests (static delivery, assets, 404s, the live database, admin authentication, product/service CRUD and image uploads):
+
+```bash
+npm test
+```
+
+The tests need a reachable database. They create temporary `__test_admin_*` accounts and temporary upload directories, delete both afterwards, and each auth test uses its own forwarded IP so rate-limit buckets do not leak between tests.
 
 ## Credits
 
