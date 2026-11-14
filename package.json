@@ -1,0 +1,52 @@
+{
+  "name": "dheera-creatives",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dheera Creatives website served by NestJS",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "postinstall": "prisma generate",
+    "build": "nest build",
+    "start": "nest start",
+    "start:dev": "nest start --watch",
+    "start:prod": "node dist/main",
+    "test": "tsc -p tsconfig.test.json && node --test --test-concurrency=1 .test-dist/test/app.e2e-spec.js .test-dist/test/database.e2e-spec.js .test-dist/test/auth.e2e-spec.js .test-dist/test/products.e2e-spec.js .test-dist/test/services.e2e-spec.js .test-dist/test/reorder.e2e-spec.js .test-dist/test/uploads.e2e-spec.js .test-dist/test/public-catalog.e2e-spec.js",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
+    "db:seed": "prisma db seed",
+    "db:reset-admin": "tsx prisma/reset-admin.ts"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@nestjs/common": "^12.4.2",
+    "@nestjs/config": "^12.1.1",
+    "@nestjs/core": "^12.4.2",
+    "@nestjs/mapped-types": "^12.0.1",
+    "@nestjs/platform-express": "^12.4.2",
+    "@nestjs/throttler": "^6.7.1",
+    "@prisma/client": "^6.19.3",
+    "bcryptjs": "^3.0.3",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.15.1",
+    "joi": "^18.3.2",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^12.0.12",
+    "@nestjs/testing": "^12.4.2",
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.3.0",
+    "@types/node": "^24.0.0",
+    "@types/supertest": "^7.2.1",
+    "prisma": "^6.19.3",
+    "supertest": "^7.3.2",
+    "tsx": "^4.23.15",
+    "typescript": "~5.9.3"
+  }
+}

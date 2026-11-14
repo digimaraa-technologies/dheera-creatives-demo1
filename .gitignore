@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.test-dist/
+coverage/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+
+# Uploaded images live on the server filesystem, not in Git.
+uploads/*
+!uploads/.gitkeep

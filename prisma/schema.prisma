@@ -1,0 +1,72 @@
+// Prisma 6 is used because Prisma 7+ is ESM-only and this app builds to CommonJS.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Admin {
+  id           String    @id @default(uuid()) @db.Uuid
+  username     String    @unique @db.VarChar(50)
+  email        String    @unique @db.VarChar(254)
+  passwordHash String    @db.VarChar(255)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  sessions     Session[]
+
+  @@map("admins")
+}
+
+model Session {
+  id        String   @id @default(uuid()) @db.Uuid
+  tokenHash String   @unique @db.Char(64)
+  adminId   String   @db.Uuid
+  admin     Admin    @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([adminId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+model Product {
+  id            String   @id @default(uuid()) @db.Uuid
+  name          String   @db.VarChar(160)
+  slug          String   @unique @db.VarChar(160)
+  description   String   @db.Text
+  category      String   @db.VarChar(80)
+  imageUrl      String   @db.VarChar(2048)
+  imageFilename String?  @db.VarChar(255)
+  price         Decimal? @db.Decimal(10, 2)
+  displayOrder  Int      @default(0)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([category])
+  @@index([isActive, displayOrder])
+  @@map("products")
+}
+
+model Service {
+  id            String   @id @default(uuid()) @db.Uuid
+  name          String   @db.VarChar(160)
+  slug          String   @unique @db.VarChar(160)
+  description   String   @db.Text
+  category      String   @db.VarChar(80)
+  imageUrl      String   @db.VarChar(2048)
+  imageFilename String?  @db.VarChar(255)
+  price         Decimal? @db.Decimal(10, 2)
+  displayOrder  Int      @default(0)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([category])
+  @@index([isActive, displayOrder])
+  @@map("services")
+}
