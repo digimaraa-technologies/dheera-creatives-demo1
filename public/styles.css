@@ -834,6 +834,45 @@ body {
   transform: translateX(4px);
 }
 
+/* Catalogue states (loading, empty, missing image) */
+.collections-grid[aria-busy="true"] {
+  opacity: 0.55;
+  transition: opacity 0.2s ease;
+}
+
+.collections-grid.is-empty {
+  display: block;
+}
+
+.collection-price {
+  color: var(--color-fern);
+  font-weight: 600;
+  margin-bottom: 1rem;
+}
+
+.collection-image-wrapper.is-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #eef2ea, #e3e9df);
+}
+
+.collection-image-wrapper.is-placeholder::after {
+  content: 'Dheera Creatives';
+  font-family: var(--font-heading);
+  font-size: 0.95rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-fern);
+}
+
+.catalog-empty {
+  padding: 2.5rem 1rem;
+  text-align: center;
+  color: var(--color-muted);
+  font-size: 1.05rem;
+}
+
 /* About */
 .about {
   background-color: var(--color-background);

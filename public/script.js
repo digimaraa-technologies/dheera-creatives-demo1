@@ -37,6 +37,12 @@
     console.warn('[Dheera Creatives] config.js not found — dynamic contact details were not applied.');
   }
 
+  // Catalogue data rules live in catalog-core.js so they can be tested without
+  // a browser. Without it the static collection cards stay in place.
+  var catalogCore = (typeof DheeraCatalogCore !== 'undefined' && DheeraCatalogCore)
+    ? DheeraCatalogCore
+    : null;
+
   /* ------------------------------------------------------------------
      Absolute JSON-LD URLs.
      The domain is never hard-coded for structured data: the JSON-LD blocks
@@ -96,6 +102,14 @@
         block.textContent = block.textContent.split(SITE_URL_TOKEN).join(origin);
       }
     });
+  }
+
+  // Absolute URL for same-site paths (photos, uploads), used by the gallery
+  // lightbox and catalogue enquiry links.
+  function absoluteUrl(src) {
+    var origin = config ? resolveSiteOrigin(config.website) : '';
+    var clean = String(src).replace(/^\.?\//, '');
+    return origin ? origin + '/' + clean : clean;
   }
 
   /* ------------------------------------------------------------------
@@ -389,12 +403,6 @@
     // Absolute URL for the photo being viewed, so the pre-filled WhatsApp
     // message links to something the brand can actually open. Falls back to
     // the page-relative path when no origin can be resolved.
-    function absoluteUrl(src) {
-      var origin = config ? resolveSiteOrigin(config.website) : '';
-      var clean = String(src).replace(/^\.?\//, '');
-      return origin ? origin + '/' + clean : clean;
-    }
-
     // NOTE: WhatsApp click-to-chat can only pre-fill *text* — it cannot attach
     // a file. The photo is therefore sent as a link, with {image} replaced by
     // its absolute URL so the brand sees which design is meant.
@@ -540,6 +548,174 @@
       if (Math.abs(deltaX) < 45 || Math.abs(deltaX) < Math.abs(deltaY)) return;
       show(deltaX < 0 ? index + 1 : index - 1);
     }, { passive: true });
+  }
+
+  /* ------------------------------------------------------------------
+     Catalogue: products and services from the public API
+     The six cards in index.html stay as the no-JS / API-failure fallback.
+     A successful empty response replaces them with an empty state.
+     ------------------------------------------------------------------ */
+  function fetchCatalog(url) {
+    return window.fetch(url, {
+      credentials: 'omit',
+      headers: { Accept: 'application/json' }
+    }).then(function (response) {
+      if (!response.ok) return { ok: false, items: [] };
+      return response.json().then(function (data) {
+        if (!data || !Array.isArray(data.items)) return { ok: false, items: [] };
+        return { ok: true, items: data.items };
+      });
+    }).catch(function () {
+      return { ok: false, items: [] };
+    });
+  }
+
+  function catalogEnquiryUrl(item) {
+    if (!config || !catalogCore) return '';
+
+    var client = config.client || {};
+    var template = (config.enquiry && config.enquiry.catalogMessage) || '';
+    var origin = resolveSiteOrigin(config.website);
+    var imageUrl = item.imageUrl ? (origin ? origin + item.imageUrl : item.imageUrl) : '';
+    var pageUrl = origin ? origin + '/#collections' : '';
+
+    return catalogCore.buildWhatsAppUrl({
+      whatsapp: client.whatsapp,
+      template: template,
+      name: item.name,
+      url: imageUrl || pageUrl
+    });
+  }
+
+  function createCatalogCard(item) {
+    var article = document.createElement('article');
+    article.className = 'collection-card is-visible';
+    article.setAttribute('data-catalog-type', item.type);
+    if (item.id) article.setAttribute('data-catalog-id', item.id);
+
+    var wrapper = document.createElement('div');
+    wrapper.className = 'collection-image-wrapper';
+
+    if (item.imageUrl) {
+      var image = document.createElement('img');
+      image.className = 'collection-image';
+      image.setAttribute('src', item.imageUrl);
+      image.setAttribute('alt', item.category ? item.name + ' — ' + item.category : item.name);
+      image.setAttribute('width', '720');
+      image.setAttribute('height', '540');
+      image.setAttribute('loading', 'lazy');
+      image.setAttribute('decoding', 'async');
+      image.addEventListener('error', function () {
+        if (image.parentNode) image.parentNode.removeChild(image);
+        wrapper.classList.add('is-placeholder');
+      });
+      wrapper.appendChild(image);
+    } else {
+      wrapper.classList.add('is-placeholder');
+    }
+
+    var content = document.createElement('div');
+    content.className = 'collection-content';
+
+    var title = document.createElement('h3');
+    title.className = 'collection-title';
+    title.textContent = item.name;
+    content.appendChild(title);
+
+    if (item.description) {
+      var description = document.createElement('p');
+      description.className = 'collection-desc';
+      description.textContent = item.description;
+      content.appendChild(description);
+    }
+
+    if (item.price !== null) {
+      var priceText = catalogCore.formatPrice(item.price);
+      if (priceText) {
+        var price = document.createElement('p');
+        price.className = 'collection-price';
+        price.textContent = priceText;
+        content.appendChild(price);
+      }
+    }
+
+    var link = document.createElement('a');
+    link.className = 'collection-link';
+    var enquiryUrl = catalogEnquiryUrl(item);
+    if (enquiryUrl) {
+      link.setAttribute('href', enquiryUrl);
+      link.setAttribute('target', '_blank');
+      link.setAttribute('rel', 'noopener noreferrer');
+      link.textContent = 'Enquire on WhatsApp';
+    } else {
+      link.setAttribute('href', '#contact');
+      link.textContent = 'Enquire About This Design';
+    }
+    content.appendChild(link);
+
+    article.appendChild(wrapper);
+    article.appendChild(content);
+    return article;
+  }
+
+  function renderCatalogEmpty(grid) {
+    var empty = document.createElement('p');
+    empty.className = 'catalog-empty';
+    empty.textContent = 'New creations are being prepared. Please check back soon.';
+
+    while (grid.firstChild) grid.removeChild(grid.firstChild);
+    grid.classList.add('is-empty');
+    grid.appendChild(empty);
+  }
+
+  function renderCatalog(grid, outcome, fallbackCards) {
+    var fragment = document.createDocumentFragment();
+
+    if (outcome.useFallback) {
+      fallbackCards.forEach(function (card) {
+        fragment.appendChild(card);
+      });
+    }
+
+    outcome.items.forEach(function (item) {
+      fragment.appendChild(createCatalogCard(item));
+    });
+
+    while (grid.firstChild) grid.removeChild(grid.firstChild);
+    grid.classList.remove('is-empty');
+    grid.appendChild(fragment);
+  }
+
+  function initCatalog() {
+    var grid = document.querySelector('#collections .collections-grid');
+    if (!grid || !catalogCore || typeof window.fetch !== 'function') return;
+
+    var fallbackCards = Array.prototype.slice.call(grid.children);
+    grid.setAttribute('aria-busy', 'true');
+
+    Promise.all([
+      fetchCatalog('/api/products?pageSize=100'),
+      fetchCatalog('/api/services?pageSize=100')
+    ]).then(function (results) {
+      var outcome = catalogCore.resolveCatalog({
+        origin: window.location.origin,
+        products: results[0],
+        services: results[1],
+        hasFallback: fallbackCards.length > 0
+      });
+
+      grid.removeAttribute('aria-busy');
+
+      if (outcome.mode === 'fallback') return;
+      if (outcome.mode === 'empty') {
+        renderCatalogEmpty(grid);
+        return;
+      }
+      renderCatalog(grid, outcome, fallbackCards);
+    }).catch(function () {
+      // Never surface backend details; the static cards are already visible.
+      grid.removeAttribute('aria-busy');
+    });
   }
 
   /* ------------------------------------------------------------------
@@ -941,6 +1117,7 @@
     applyConfig();
     initGallery();
     initEnquiryForm();
+    initCatalog();
   }
 
   if (document.readyState === 'loading') {

@@ -97,6 +97,12 @@ const siteConfig = {
     // enquiry refers to. (WhatsApp click-to-chat can only prefill TEXT —
     // it cannot attach a file — so the image is sent as a link.)
     whatsappMessage:
-      "Hi Dheera Creatives! I would like to enquire about this design from your gallery: {image}"
+      "Hi Dheera Creatives! I would like to enquire about this design from your gallery: {image}",
+
+    // Prefilled text for the "Enquire on WhatsApp" link on product/service
+    // cards. {name} is the catalogue item's name; {url} is its image when one
+    // exists, otherwise the collections page.
+    catalogMessage:
+      "Hi Dheera Creatives! I would like to enquire about {name} from your website: {url}"
   }
 };
