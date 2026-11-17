@@ -160,7 +160,6 @@ textarea {
 }
 
 .sidebar-close {
-  display: none;
   margin-left: auto;
   color: var(--sidebar-text);
 }
@@ -285,10 +284,6 @@ textarea {
   color: var(--muted);
 }
 
-.menu-btn {
-  display: none;
-}
-
 /* ---------- buttons ---------- */
 
 .btn {
@@ -362,6 +357,12 @@ textarea {
   color: var(--muted);
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease;
+}
+
+/* Must follow .icon-btn to override its display; the <=900px block re-shows them. */
+.menu-btn,
+.sidebar-close {
+  display: none;
 }
 
 .icon-btn:hover:not(:disabled) {
