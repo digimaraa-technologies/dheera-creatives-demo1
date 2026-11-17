@@ -10,8 +10,11 @@ import { LoginPage } from './pages/LoginPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 
 export function App() {
+  // Builds are served under /admin, so routes and links must carry that prefix.
+  const basename = import.meta.env.BASE_URL.replace(/\/$/, '') || '/';
+
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={basename}>
       <AuthProvider>
         <ToastProvider>
           <Routes>

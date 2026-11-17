@@ -18,4 +18,10 @@ export const authApi = {
       skipUnauthorizedEvent: true,
     });
   },
+  logoutAll(): Promise<{ success: true }> {
+    return apiRequest('/api/auth/logout-all', {
+      method: 'POST',
+      skipUnauthorizedEvent: true,
+    });
+  },
 };

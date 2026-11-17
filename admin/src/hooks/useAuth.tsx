@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 import { authApi } from '../api/auth';
-import { UNAUTHORIZED_EVENT } from '../api/client';
+import { ApiError, UNAUTHORIZED_EVENT } from '../api/client';
 import type { Admin } from '../types';
 
 type Status = 'loading' | 'authenticated' | 'anonymous';
@@ -19,6 +19,7 @@ interface AuthContextValue {
   sessionExpired: boolean;
   login(identifier: string, password: string): Promise<void>;
   logout(): Promise<void>;
+  logoutAll(): Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -78,9 +79,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const logoutAll = useCallback(async () => {
+    try {
+      await authApi.logoutAll();
+    } catch (error) {
+      // A 401 means the session is already gone; anything else is a real failure.
+      if (!(error instanceof ApiError) || error.status !== 401) throw error;
+    }
+    setAdmin(null);
+    setStatus('anonymous');
+    setSessionExpired(false);
+  }, []);
+
   const value = useMemo(
-    () => ({ admin, status, sessionExpired, login, logout }),
-    [admin, status, sessionExpired, login, logout],
+    () => ({ admin, status, sessionExpired, login, logout, logoutAll }),
+    [admin, status, sessionExpired, login, logout, logoutAll],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

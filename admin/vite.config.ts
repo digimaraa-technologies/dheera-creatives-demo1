@@ -3,7 +3,9 @@ import { defineConfig } from 'vitest/config';
 
 const API_TARGET = process.env.VITE_PROXY_TARGET ?? 'http://localhost:3000';
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  // Production builds are served by NestJS at /admin, same origin as the API.
+  base: command === 'build' ? '/admin/' : '/',
   plugins: [react()],
   server: {
     port: 5173,
@@ -18,4 +20,4 @@ export default defineConfig({
     setupFiles: './src/test/setup.ts',
     css: false,
   },
-});
+}));

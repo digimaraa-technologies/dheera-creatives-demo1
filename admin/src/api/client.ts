@@ -25,6 +25,17 @@ function readCookie(name: string): string | undefined {
   return row ? row.split('=').slice(1).join('=') : undefined;
 }
 
+// Production cookies use the __Host- prefix; development does not.
+const CSRF_COOKIE_NAMES = ['__Host-dheera_csrf', 'dheera_csrf'];
+
+function readCsrfToken(): string | undefined {
+  for (const name of CSRF_COOKIE_NAMES) {
+    const value = readCookie(name);
+    if (value) return value;
+  }
+  return undefined;
+}
+
 export function toQuery(params: object): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
@@ -49,7 +60,7 @@ export async function apiRequest<T>(
   const headers = new Headers(init.headers);
 
   if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
-    const csrf = readCookie('dheera_csrf');
+    const csrf = readCsrfToken();
     if (csrf) headers.set('x-csrf-token', csrf);
   }
   if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
