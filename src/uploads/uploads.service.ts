@@ -1,21 +1,37 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { mkdir, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import {
+  UPLOAD_IMAGE_FILENAME,
+  parseLocalImageUrl,
+  type UploadFolder,
+} from '../common/image-url';
+import { PrismaService } from '../prisma/prisma.service';
 import { assertAllowedImage } from './validators/image-file.validator';
-
-export type UploadFolder = 'products' | 'services';
 
 export interface StoredImage {
   imageUrl: string;
   imageFilename: string;
 }
 
-const SAFE_FILENAME = /^[a-z0-9-]+\.(?:jpe?g|png|webp|avif)$/i;
+export interface OrphanUploadReport {
+  /** Image files found in the managed folders. */
+  scanned: number;
+  /** Files still referenced by a product or service. */
+  referenced: number;
+  candidateCount: number;
+  /** Safe relative identifiers such as `services/<uuid>.webp`. */
+  candidates: string[];
+}
+
+const UPLOAD_FOLDERS: readonly UploadFolder[] = ['products', 'services'];
 
 @Injectable()
 export class UploadsService {
   private readonly logger = new Logger(UploadsService.name);
+
+  constructor(private readonly prisma: PrismaService) {}
 
   // Read at call time: ConfigModule runs when the module is imported, while
   // tests point UPLOAD_DIR at a temp directory afterwards.
@@ -35,44 +51,68 @@ export class UploadsService {
     return { imageUrl: `/uploads/${folder}/${imageFilename}`, imageFilename };
   }
 
-  /** Deletes one stored image. Failures are logged, never thrown. */
-  async delete(folder: UploadFolder, imageFilename: string): Promise<void> {
-    if (!SAFE_FILENAME.test(imageFilename)) {
-      this.logger.warn(`Refusing to delete unsafe filename in ${folder}: ${imageFilename}`);
-      return;
-    }
+  /**
+   * Files are never deleted automatically. Between the "no record references
+   * this image" check and the unlink, another product or service could start
+   * referencing it, leaving a broken image. Making that atomic would require
+   * every catalogue write to coordinate with the unlink across processes, so
+   * cleanup is deferred to the admin-only orphan report instead.
+   */
+  deferCleanup(imageUrl: string): void {
+    const parsed = parseLocalImageUrl(imageUrl);
+    if (!parsed) return;
+    this.logger.log(
+      `Deferred upload cleanup: /uploads/${parsed.folder}/${parsed.filename} ` +
+        '(see GET /api/admin/uploads/orphans)',
+    );
+  }
 
-    const path = join(this.rootDir, folder, imageFilename);
-    try {
-      await unlink(path);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        this.logger.error(`Failed to delete uploaded image ${path}: ${(error as Error).message}`);
+  /**
+   * Admin-only dry run: lists image files that no product or service
+   * references. Deletes nothing. Symlinks, directories, dotfiles such as
+   * `.gitkeep` and non-image names are skipped.
+   */
+  async findOrphanUploads(): Promise<OrphanUploadReport> {
+    const [products, services] = await Promise.all([
+      this.prisma.product.findMany({ select: { imageUrl: true } }),
+      this.prisma.service.findMany({ select: { imageUrl: true } }),
+    ]);
+    const referencedUrls = new Set([
+      ...products.map((row) => row.imageUrl),
+      ...services.map((row) => row.imageUrl),
+    ]);
+
+    let scanned = 0;
+    let referenced = 0;
+    const candidates: string[] = [];
+
+    for (const folder of UPLOAD_FOLDERS) {
+      let entries;
+      try {
+        entries = await readdir(join(this.rootDir, folder), { withFileTypes: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw error;
+      }
+
+      for (const entry of entries) {
+        if (
+          !entry.isFile() ||
+          entry.name.startsWith('.') ||
+          !UPLOAD_IMAGE_FILENAME.test(entry.name)
+        ) {
+          continue;
+        }
+        scanned += 1;
+        if (referencedUrls.has(`/uploads/${folder}/${entry.name}`)) {
+          referenced += 1;
+        } else {
+          candidates.push(`${folder}/${entry.name}`);
+        }
       }
     }
-  }
 
-  /** Deletes the file behind a local /uploads/... URL; ignores external URLs. */
-  async deleteByUrl(imageUrl: string): Promise<void> {
-    const parsed = parseUploadUrl(imageUrl);
-    if (parsed) {
-      await this.delete(parsed.folder, parsed.filename);
-    }
+    candidates.sort();
+    return { scanned, referenced, candidateCount: candidates.length, candidates };
   }
-
-  /** Best-effort cleanup of a just-uploaded file whose DB write failed. */
-  async deleteNewUpload(imageUrl: string | undefined): Promise<void> {
-    if (imageUrl?.startsWith('/uploads/')) {
-      await this.deleteByUrl(imageUrl);
-    }
-  }
-}
-
-export function parseUploadUrl(
-  imageUrl: string,
-): { folder: UploadFolder; filename: string } | null {
-  const match = /^\/uploads\/(products|services)\/([a-z0-9-]+\.(?:jpe?g|png|webp|avif))$/i.exec(
-    imageUrl,
-  );
-  return match ? { folder: match[1] as UploadFolder, filename: match[2] } : null;
 }

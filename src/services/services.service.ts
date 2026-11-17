@@ -40,11 +40,11 @@ export class ServicesService {
   ) {}
 
   async list(query: AdminCatalogQueryDto): Promise<Paginated<ServiceDto>> {
-    return this.findPage(query, query.isActive);
+    return this.findPage(query, query.isActive, false);
   }
 
   async listPublic(query: PublicCatalogQueryDto): Promise<Paginated<ServiceDto>> {
-    return this.findPage(query, true);
+    return this.findPage(query, true, true);
   }
 
   async findBySlug(slug: string): Promise<ServiceDto> {
@@ -84,8 +84,9 @@ export class ServicesService {
       });
       return toDto(service);
     } catch (error) {
-      // The image was uploaded before this request; drop it if the write failed.
-      await this.uploads.deleteNewUpload(dto.imageUrl);
+      // The image was uploaded before this request; cleanup is deferred to the
+      // orphan report if the write failed.
+      this.uploads.deferCleanup(dto.imageUrl);
       throw mapWriteError(error);
     }
   }
@@ -111,15 +112,16 @@ export class ServicesService {
     try {
       updated = await this.prisma.service.update({ where: { id }, data });
     } catch (error) {
-      // The new file was uploaded before this request; drop it if the write failed.
+      // The new file was uploaded before this request; cleanup is deferred if
+      // the write failed.
       if (dto.imageUrl !== undefined && dto.imageUrl !== existing.imageUrl) {
-        await this.uploads.deleteNewUpload(dto.imageUrl);
+        this.uploads.deferCleanup(dto.imageUrl);
       }
       throw mapWriteError(error);
     }
 
     if (updated.imageUrl !== existing.imageUrl) {
-      await this.uploads.deleteByUrl(existing.imageUrl);
+      this.uploads.deferCleanup(existing.imageUrl);
     }
 
     return toDto(updated);
@@ -132,8 +134,8 @@ export class ServicesService {
     }
 
     await this.prisma.service.delete({ where: { id } });
-    // Cleanup failures are logged inside the service and never fail the delete.
-    await this.uploads.deleteByUrl(existing.imageUrl);
+    // Nothing is unlinked automatically; the orphan report lists the file.
+    this.uploads.deferCleanup(existing.imageUrl);
 
     return { success: true };
   }
@@ -175,6 +177,7 @@ export class ServicesService {
   private async findPage(
     query: PublicCatalogQueryDto & Partial<AdminCatalogQueryDto>,
     isActive: boolean | undefined,
+    activeCategoriesOnly: boolean,
   ): Promise<Paginated<ServiceDto>> {
     const where: Prisma.ServiceWhereInput = {};
     if (isActive !== undefined) where.isActive = isActive;
@@ -191,6 +194,7 @@ export class ServicesService {
       this.prisma.service.findMany({ where, orderBy, skip, take }),
       this.prisma.service.findMany({
         distinct: ['category'],
+        where: activeCategoriesOnly ? { isActive: true } : {},
         select: { category: true },
         orderBy: { category: 'asc' },
       }),

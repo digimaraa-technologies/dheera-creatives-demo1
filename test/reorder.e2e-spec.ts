@@ -21,13 +21,14 @@ const SLUG_PREFIX = `test-reorder-${randomUUID().slice(0, 8)}`;
 
 function productBody(index: number): Record<string, unknown> {
   const slug = `${SLUG_PREFIX}-product-${index}`;
+  const imageFilename = `${randomUUID()}.webp`;
   return {
     name: `${PREFIX}_product_${index}`,
     slug,
     description: `Reorder fixture product ${index}`,
     category: 'Blouses',
-    imageUrl: `/uploads/products/${randomUUID()}.webp`,
-    imageFilename: 'fixture.webp',
+    imageUrl: `/uploads/products/${imageFilename}`,
+    imageFilename,
     price: 1000 + index,
     displayOrder: index,
     isActive: true,
@@ -36,13 +37,14 @@ function productBody(index: number): Record<string, unknown> {
 
 function serviceBody(index: number): Record<string, unknown> {
   const slug = `${SLUG_PREFIX}-service-${index}`;
+  const imageFilename = `${randomUUID()}.jpg`;
   return {
     name: `${PREFIX}_service_${index}`,
     slug,
     description: `Reorder fixture service ${index}`,
     category: 'Stitching',
-    imageUrl: `/uploads/services/${randomUUID()}.jpg`,
-    imageFilename: 'fixture.jpg',
+    imageUrl: `/uploads/services/${imageFilename}`,
+    imageFilename,
     price: 2000 + index,
     displayOrder: index,
     isActive: true,
@@ -303,11 +305,39 @@ describe('Catalog reorder API (e2e)', () => {
 
   it('rolls back the whole reorder when one update fails', async () => {
     const productsBefore = await storedOrders('products');
+    const [first] = productIds;
+    assert.notEqual(productsBefore[first], 1);
+
+    // The DTO now rejects out-of-range positions, so force the failure inside
+    // the transaction instead: make the membership pre-check pass with an id
+    // that does not exist. The first update must be rolled back with it.
+    const originalCount = ctx.prisma.product.count;
+    ctx.prisma.product.count = (async () =>
+      productIds.length) as unknown as typeof originalCount;
+
+    try {
+      await request(server())
+        .patch(`${PRODUCTS}/reorder`)
+        .set(adminHeaders(session))
+        .send({
+          items: [
+            { id: first, displayOrder: 1 },
+            { id: randomUUID(), displayOrder: 2 },
+          ],
+        })
+        .expect(404);
+    } finally {
+      ctx.prisma.product.count = originalCount;
+    }
+
+    assert.deepEqual(await storedOrders('products'), productsBefore);
+  });
+
+  it('rejects positions above the PostgreSQL int range without changing the order', async () => {
+    const productsBefore = await storedOrders('products');
     const [first, second] = productIds;
     assert.notEqual(productsBefore[first], 1);
 
-    // 2^31 exceeds PostgreSQL's int range, so the second update fails inside the
-    // transaction and the first update must be rolled back with it.
     await request(server())
       .patch(`${PRODUCTS}/reorder`)
       .set(adminHeaders(session))
@@ -317,7 +347,7 @@ describe('Catalog reorder API (e2e)', () => {
           { id: second, displayOrder: 2 ** 31 },
         ],
       })
-      .expect(500);
+      .expect(400);
 
     assert.deepEqual(await storedOrders('products'), productsBefore);
   });

@@ -1,5 +1,15 @@
 import { Transform, Type } from 'class-transformer';
-import { IsBoolean, IsIn, IsInt, IsOptional, IsString, Length, Max, Min } from 'class-validator';
+import {
+  IsBoolean,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  Length,
+  Matches,
+  Max,
+  Min,
+} from 'class-validator';
 
 export const CATALOG_SORT_FIELDS = ['displayOrder', 'createdAt', 'name'] as const;
 export type CatalogSortField = (typeof CATALOG_SORT_FIELDS)[number];
@@ -12,6 +22,7 @@ export class PublicCatalogQueryDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
+  @Max(100_000)
   page = 1;
 
   @IsOptional()
@@ -24,11 +35,17 @@ export class PublicCatalogQueryDto {
   @IsOptional()
   @IsString()
   @Length(1, 160)
+  @Matches(/^[^\u0000-\u001F\u007F]*$/, {
+    message: 'search must not contain control characters',
+  })
   search?: string;
 
   @IsOptional()
   @IsString()
   @Length(1, 80)
+  @Matches(/^[^\u0000-\u001F\u007F]*$/, {
+    message: 'category must not contain control characters',
+  })
   category?: string;
 }
 

@@ -12,8 +12,11 @@ import {
   Min,
 } from 'class-validator';
 
-const IMAGE_URL = /^(?:\/uploads\/[a-z0-9-]+\/[a-z0-9-]+\.(?:jpe?g|png|webp|avif)|https?:\/\/\S+)$/i;
-const IMAGE_FILENAME = /^[a-z0-9-]+\.(?:jpe?g|png|webp|avif)$/i;
+import {
+  LOCAL_IMAGE_URL,
+  UPLOAD_IMAGE_FILENAME,
+} from '../../common/image-url';
+
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export class CreateProductDto {
@@ -39,15 +42,17 @@ export class CreateProductDto {
 
   @IsString()
   @MaxLength(2048)
-  @Matches(IMAGE_URL, {
-    message: 'imageUrl must be a /uploads/... path or an http(s) URL',
+  @Matches(LOCAL_IMAGE_URL, {
+    message: 'imageUrl must be an uploaded /uploads/products/ or /uploads/services/ image path',
   })
   imageUrl!: string;
 
   @IsOptional()
   @IsString()
   @MaxLength(255)
-  @Matches(IMAGE_FILENAME)
+  @Matches(UPLOAD_IMAGE_FILENAME, {
+    message: 'imageFilename must be the UUID file name of an uploaded image',
+  })
   imageFilename?: string;
 
   @IsOptional()

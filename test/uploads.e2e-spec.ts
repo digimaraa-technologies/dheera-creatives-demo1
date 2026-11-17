@@ -146,7 +146,7 @@ describe('Uploads API (e2e)', () => {
     await request(ctx.app.getHttpServer()).get('/uploads/../.env').expect(404);
   });
 
-  it('deletes the old file only after a successful image replacement', async () => {
+  it('keeps replaced and deleted files and reports them as orphans', async () => {
     const first = await uploadPng();
     const name = `__test_upload_replace_${randomUUID().slice(0, 6)}`;
     const created = await request(ctx.app.getHttpServer())
@@ -169,21 +169,30 @@ describe('Uploads API (e2e)', () => {
       .send({ imageUrl: second.imageUrl, imageFilename: second.imageFilename })
       .expect(200);
 
-    assert.equal(await exists(storedPath(first.imageUrl)), false);
+    // Cleanup is deferred, so the replaced file stays on disk.
+    assert.ok(await exists(storedPath(first.imageUrl)));
     assert.ok(await exists(storedPath(second.imageUrl)));
 
     const stored = await ctx.prisma.product.findUnique({ where: { id: created.body.id } });
     assert.equal(stored?.imageFilename, second.imageFilename);
 
-    // Deleting the record removes the current image file.
+    // Deleting the record also leaves the file for the orphan report.
     await request(ctx.app.getHttpServer())
       .delete(`/api/admin/products/${created.body.id}`)
       .set(adminHeaders(session))
       .expect(200);
-    assert.equal(await exists(storedPath(second.imageUrl)), false);
+    assert.ok(await exists(storedPath(second.imageUrl)));
+
+    const report = await request(ctx.app.getHttpServer())
+      .get('/api/admin/uploads/orphans')
+      .set('Cookie', session.cookie)
+      .expect(200);
+    const candidates: string[] = report.body.candidates;
+    assert.ok(candidates.includes(first.imageUrl.replace('/uploads/', '')));
+    assert.ok(candidates.includes(second.imageUrl.replace('/uploads/', '')));
   });
 
-  it('removes the new upload when the database update fails', async () => {
+  it('keeps the new upload when the database update fails (cleanup deferred)', async () => {
     const first = await uploadPng();
     const takenSlug = `test-upload-taken-${randomUUID().slice(0, 6)}`;
 
@@ -223,7 +232,7 @@ describe('Uploads API (e2e)', () => {
       })
       .expect(409);
 
-    assert.equal(await exists(storedPath(pending.imageUrl)), false);
+    assert.ok(await exists(storedPath(pending.imageUrl)));
     // The old image is untouched because the update never happened.
     assert.ok(await exists(storedPath(first.imageUrl)));
 
@@ -231,7 +240,7 @@ describe('Uploads API (e2e)', () => {
     assert.equal(stored?.imageUrl, first.imageUrl);
   });
 
-  it('removes the new upload when the database create fails', async () => {
+  it('keeps the new upload when the database create fails (cleanup deferred)', async () => {
     const takenSlug = `test-upload-create-${randomUUID().slice(0, 6)}`;
 
     await request(ctx.app.getHttpServer())
@@ -260,7 +269,7 @@ describe('Uploads API (e2e)', () => {
       })
       .expect(409);
 
-    assert.equal(await exists(storedPath(pending.imageUrl)), false);
+    assert.ok(await exists(storedPath(pending.imageUrl)));
   });
 
   it('accepts uploads for services', async () => {

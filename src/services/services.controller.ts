@@ -1,9 +1,11 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
+import { ThrottlerGuard } from '@nestjs/throttler';
 import { PublicCatalogQueryDto } from '../common/catalog-query.dto';
 import { Paginated } from '../common/pagination';
 import { ServiceDto, ServicesService } from './services.service';
 
 @Controller('api/services')
+@UseGuards(ThrottlerGuard)
 export class ServicesController {
   constructor(private readonly services: ServicesService) {}
 

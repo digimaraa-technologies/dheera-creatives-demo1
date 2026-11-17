@@ -6,6 +6,7 @@ import {
   IsArray,
   IsInt,
   IsUUID,
+  Max,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -16,6 +17,7 @@ export class ReorderItemDto {
 
   @IsInt()
   @Min(0)
+  @Max(2_147_483_647)
   displayOrder!: number;
 }
 

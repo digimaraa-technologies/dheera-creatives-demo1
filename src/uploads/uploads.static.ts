@@ -20,6 +20,8 @@ export function serveUploads(app: NestExpressApplication): void {
       dotfiles: 'deny',
       fallthrough: true,
       maxAge: '7d',
+      // Filenames are random UUIDs and never reused, so a long cache is safe.
+      immutable: true,
       setHeaders: (response) => {
         // Images are data, never documents: stop MIME sniffing and scripting.
         response.setHeader('X-Content-Type-Options', 'nosniff');

@@ -10,16 +10,19 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
+import { ThrottlerGuard, Throttle } from '@nestjs/throttler';
 import { AdminAuthGuard } from '../auth/guards/admin-auth.guard';
 import { AdminCatalogQueryDto } from '../common/catalog-query.dto';
 import { Paginated } from '../common/pagination';
+import { RATE_LIMITS } from '../common/rate-limit';
 import { ReorderCatalogDto } from '../common/reorder.dto';
 import { CreateServiceDto } from './dto/create-service.dto';
 import { UpdateServiceDto } from './dto/update-service.dto';
 import { ServiceDto, ServicesService } from './services.service';
 
 @Controller('api/admin/services')
-@UseGuards(AdminAuthGuard)
+@UseGuards(AdminAuthGuard, ThrottlerGuard)
+@Throttle({ default: RATE_LIMITS.adminRead })
 export class AdminServicesController {
   constructor(private readonly services: ServicesService) {}
 
@@ -34,11 +37,13 @@ export class AdminServicesController {
   }
 
   @Post()
+  @Throttle({ default: RATE_LIMITS.adminWrite })
   create(@Body() dto: CreateServiceDto): Promise<ServiceDto> {
     return this.services.create(dto);
   }
 
   @Patch('reorder')
+  @Throttle({ default: RATE_LIMITS.adminWrite })
   reorder(
     @Body() dto: ReorderCatalogDto,
   ): Promise<{ success: true; updated: number }> {
@@ -46,6 +51,7 @@ export class AdminServicesController {
   }
 
   @Patch(':id')
+  @Throttle({ default: RATE_LIMITS.adminWrite })
   update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateServiceDto,
@@ -54,6 +60,7 @@ export class AdminServicesController {
   }
 
   @Delete(':id')
+  @Throttle({ default: RATE_LIMITS.adminWrite })
   remove(@Param('id', ParseUUIDPipe) id: string): Promise<{ success: true }> {
     return this.services.remove(id);
   }
