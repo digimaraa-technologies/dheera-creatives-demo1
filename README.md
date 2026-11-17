@@ -99,7 +99,8 @@ dheera_creatives_demo1/
 │   ├── auth.e2e-spec.ts    # Login, sessions, CSRF and rate limiting
 │   ├── products.e2e-spec.ts # Public + admin product API
 │   ├── services.e2e-spec.ts # Public + admin service API
-│   ├── uploads.e2e-spec.ts  # Upload validation, storage and cleanup
+│   ├── uploads.e2e-spec.ts  # Upload validation, storage and orphan reporting
+│   ├── phase3.e2e-spec.ts   # Rate limits, cache, categories, image URLs, orphans
 │   └── helpers/             # Shared test app / session helpers
 ├── .env.example            # Required variables, no secrets
 ├── package.json
@@ -459,7 +460,7 @@ Set `DATABASE_URL` in `.env` (see `.env.example`). It is validated at boot: the 
 | Model | Table | Notes |
 |---|---|---|
 | `Admin` | `admins` | UUID id, unique `username` and `email`, bcrypt `passwordHash` |
-| `Session` | `sessions` | UUID id, unique `tokenHash` (SHA-256 hex), `adminId` FK with `ON DELETE CASCADE`, `expiresAt` |
+| `Session` | `sessions` | UUID id, unique `tokenHash` (SHA-256 hex), nullable `csrfHash` (SHA-256 hex of the session-bound CSRF token), `adminId` FK with `ON DELETE CASCADE`, `expiresAt`, `lastSeenAt` |
 | `Product` | `products` | UUID id, unique `slug`, optional `Decimal(10,2)` price, `imageUrl` + nullable `imageFilename`, indexes on `category` and `(isActive, displayOrder)` |
 | `Service` | `services` | same shape as `Product` |
 
@@ -481,7 +482,7 @@ $env:ADMIN_PASSWORD="a-password-of-12-or-more-characters"
 npm run db:seed
 ```
 
-Re-running the seed refreshes the password hash for the same account and never creates a duplicate. It refuses to overwrite an account whose username or email differs.
+Re-running the seed refreshes the password hash for the same account and never creates a duplicate. It refuses to overwrite an account whose username or email differs. The password must be at least 12 characters and at most 72 UTF-8 bytes (see [Password length](#password-length)).
 
 ### Reset an admin password
 
@@ -490,14 +491,22 @@ If an existing admin's password is unknown, refresh it without creating a duplic
 ```powershell
 $env:ADMIN_USERNAME="admin"
 $env:ADMIN_EMAIL="admin@example.com"
-$env:ADMIN_PASSWORD="a-password-of-12-to-128-characters"
+$env:ADMIN_PASSWORD="a-password-of-12-characters-or-more"
 npm run db:reset-admin
 Remove-Item Env:ADMIN_USERNAME,Env:ADMIN_EMAIL,Env:ADMIN_PASSWORD
 ```
 
-The script hashes the password with bcrypt cost 12, matching the auth service. It updates the admin matching the username or email, or creates one if neither exists. It aborts without writing if the username and email belong to two different admins, never deletes admins, and never prints the password or hash.
+The script hashes the password with bcrypt cost 12, matching the auth service. It updates the admin matching the username or email, or creates one if neither exists. It aborts without writing if the username and email belong to two different admins, never deletes admins, and never prints the password or hash. New passwords must be at least 12 characters and at most 72 UTF-8 bytes.
 
 `prisma migrate dev` needs a shadow database, which the `dheera_app` role cannot create. New migrations are generated with `prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script` (or `--from-migrations` for later changes) and applied with `npm run db:migrate`.
+
+Migrations are forward-only. Do not run `prisma migrate reset` or `db push --force-reset` on a database with real data: they drop the schema. The `20261114120000_session_csrf_and_idle` migration only adds columns (`csrfHash` nullable, `lastSeenAt` with a default), so existing sessions, admins, products, services and uploads are untouched. Existing sessions stay valid: their `csrfHash` is `NULL` until the first state-changing request, which binds the token the client presents. Apply migrations **before** starting the new build:
+
+```powershell
+pg_dump ... > backup.sql   # or a snapshot, before the first production migration
+npm run db:migrate
+npm run db:generate
+```
 
 ## Admin Authentication
 
@@ -505,19 +514,26 @@ Server-side session authentication for the admin API. The public site stays publ
 
 | Endpoint | Method | Auth | Purpose |
 |---|---|---|---|
-| `/api/auth/login` | POST | public | `{ "identifier": "<username or email>", "password": "..." }` → `{ "admin": {...} }` + cookies |
+| `/api/auth/login` | POST | public (Origin checked) | `{ "identifier": "<username or email>", "password": "..." }` → `{ "admin": {...} }` + cookies |
 | `/api/auth/me` | GET | session | Current admin's safe fields (`id`, `username`, `email`, `createdAt`, `updatedAt`) |
-| `/api/auth/logout` | POST | session + CSRF | Deletes the session row and clears both cookies |
+| `/api/auth/logout` | POST | session + CSRF | Deletes the current session row and clears both cookies |
+| `/api/auth/logout-all` | POST | session + CSRF | Deletes **every** session belonging to the authenticated admin, including the current one, and clears both cookies |
 
 There is deliberately **no registration endpoint**. Admins are created with `npm run db:seed` and an existing password can be repaired with `npm run db:reset-admin`.
 
-### Session and CSRF contract (needed by the Phase 5 admin UI)
+### Session and CSRF contract
 
-- `dheera_session` — opaque 256-bit random token, `HttpOnly`, `SameSite=Lax`, `Secure` when `NODE_ENV=production`, `Path=/`. The database stores only its SHA-256 hash in `sessions.tokenHash`.
-- `dheera_csrf` — the CSRF token, readable by JavaScript (not `HttpOnly`), same flags otherwise.
-- **Every non-GET/HEAD/OPTIONS request to a guarded route must send the CSRF cookie value back in an `x-csrf-token` header.** Double-submit is enforced inside `AdminAuthGuard`, so a guarded route cannot accidentally skip it.
-- Session lifetime is `SESSION_TTL_HOURS` (default `8`, max `720`). Expired sessions are rejected and deleted on the next request.
+- `dheera_session` (production: `__Host-dheera_session`) — opaque 256-bit random token, `HttpOnly`, `SameSite=Lax`, `Secure` in production, `Path=/`, no `Domain`. The database stores only its SHA-256 hash in `sessions.tokenHash`.
+- `dheera_csrf` (production: `__Host-dheera_csrf`) — the CSRF token, readable by JavaScript (not `HttpOnly`), same flags otherwise. The `__Host-` prefix makes browsers require `Secure`, `Path=/` and no `Domain`.
+- **Every non-GET/HEAD/OPTIONS request to a guarded route must send the CSRF cookie value back in an `x-csrf-token` header.** The guard requires the header and cookie to match (timing-safe), then compares the token's SHA-256 against the hash stored on that session. A token from another session or one planted in the cookie is rejected. The check lives inside `AdminAuthGuard`, so a guarded route cannot accidentally skip it.
+- CSRF tokens are never written to `localStorage`/`sessionStorage`; the admin UI reads the cookie on each request.
+- Duplicate security cookies are rejected with `400` regardless of order. Accepting the first or last duplicate would let cookie ordering decide which value is trusted. Unrelated cookies are ignored.
+- Session lifetime is `SESSION_TTL_HOURS` (default `8`, max `720`). Inactivity timeout is `SESSION_IDLE_TTL_MINUTES` (default `30`). Expired sessions (absolute or idle) are rejected and deleted on the next request; `lastSeenAt` is written at most once a minute.
 - The browser never needs `localStorage`/`sessionStorage`; cookies carry the session.
+
+### Login origin check
+
+Login is a state-changing, unauthenticated POST, so it is a CSRF target. `LoginOriginGuard` requires an `Origin` header that exactly matches an entry in `ADMIN_FRONTEND_ORIGIN` (scheme, host and port). Missing, malformed or different origins get `403 Invalid origin`. Only `Origin` is trusted; `X-Forwarded-*` headers cannot influence this check, and CORS alone is not relied on. Browser `fetch` sends `Origin` on POST; the Vite dev proxy forwards it unchanged. Non-browser clients (scripts, health checks) must set `Origin` explicitly. The policy is to reject a missing header rather than allow it.
 
 ### Protecting new admin routes
 
@@ -538,14 +554,49 @@ list(@CurrentAdmin() admin: SafeAdmin) { ... }
 
 - bcrypt verification (`bcryptjs`, cost 12). A dummy hash is compared when the account does not exist so response time does not reveal valid usernames.
 - One generic `401 Invalid credentials` message for unknown user and wrong password. `passwordHash` is never selected or returned.
-- Login is rate limited to **5 attempts per 60 s per IP** (`@nestjs/throttler`, in-memory).
-- Request bodies are validated and unknown fields rejected by the global `ValidationPipe`.
+- Every API route is rate limited per client IP and per handler; the full policy is in [Rate limiting](#rate-limiting-behind-a-reverse-proxy). Exceeding a limit returns a generic `429 Too many requests` with no `X-RateLimit-*` or `Retry-After` headers. An account is also locked for **15 minutes after 20 failed logins** even from rotating IPs.
+- Request bodies and query parameters are validated and unknown fields rejected by the global `ValidationPipe`; pagination, reorder positions and search text are bounded.
 - CORS is restricted to the explicit origins in `ADMIN_FRONTEND_ORIGIN` (comma-separated) with `credentials: true`; there is no wildcard origin and no admin registration route.
-- Cookies are `HttpOnly`, `SameSite=Lax` and `Secure` in production; session tokens are stored hashed.
+- Cookies are `HttpOnly`, `SameSite=Lax` and `Secure` in production; session tokens are stored hashed. Production cookie names use the `__Host-` prefix; development and tests keep the unprefixed names so plain HTTP works locally.
+- Login rejects a missing or unexpected `Origin`; see [Login origin check](#login-origin-check).
+- Duplicate session/CSRF cookies are rejected rather than resolved by cookie order.
+- New passwords are capped at 72 UTF-8 bytes (bcrypt's limit) instead of being silently truncated; see [Password length](#password-length).
+- Every response carries `Content-Security-Policy`, `X-Frame-Options: DENY` (`frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`, `Referrer-Policy` and `Permissions-Policy`. Production also sends HSTS. `X-Powered-By` is disabled.
+- All `/api/` responses are `Cache-Control: no-store`, and the admin HTML/SPA fallback is `no-store` too, so session data and catalogue changes are never served from a cache. Uploaded images are immutable and cached for 7 days.
+- The admin dashboard is served by the same NestJS process at `/admin` in production, so it is same-origin with the API and receives the same headers.
 
-### Deployment caveat: rate limiting behind a reverse proxy
+### Password length
 
-The limiter keys on the client IP, which Nest reads from the socket. Behind nginx/Cloudflare every request appears to come from the proxy, so all admins share one bucket. Set Express `trust proxy` (in `src/main.ts`) to the number of proxies in front of the app, or the platform's equivalent, before deploying behind one. The limiter is also per-process: multiple instances each get their own counters.
+bcrypt hashes only the first 72 bytes of a password; everything after that is ignored. New credentials created by `npm run db:seed` and `npm run db:reset-admin` are rejected above 72 UTF-8 bytes so a long password cannot silently lose entropy.
+
+**Known limitation (deliberately deferred):** login still passes the submitted password straight to bcrypt, without a byte check. If an existing admin password is longer than 72 bytes, any input sharing its first 72 bytes also logs in. This is not changed here because the current admin password cannot be measured without exposing or resetting it. Plan a password rotation to a ≤72-byte password, verify it, and only then decide whether to reject long passwords at login. Tests pin the current behaviour so it cannot change silently.
+
+### Rate limiting behind a reverse proxy
+
+Limits are configured in `src/common/rate-limit.ts` and applied per route handler
+(`@Throttle` overrides on admin, upload and session routes):
+
+| Surface | Limit per IP | Scope |
+|---|---|---|
+| Public catalogue (`/api/products`, `/api/services`) | 120 / min | per handler |
+| Admin reads (`GET /api/admin/...`) | 240 / min | per handler |
+| Admin writes (create/update/delete/reorder) | 60 / min | per handler |
+| Uploads (`/api/admin/uploads/...`) | 30 / min | per handler |
+| Session endpoints (`/api/auth/me`, `logout`, `logout-all`) | 60 / min | per handler |
+| Login (`POST /api/auth/login`) | 5 / min | per IP |
+
+Exceeding a limit returns `429` with `{ "statusCode": 429, "message": "Too many requests" }`.
+No limiter headers are sent, so the implementation and thresholds are not advertised.
+Authentication runs before the limiter on admin and session routes, so an anonymous request is
+rejected with `401` rather than consuming a bucket. Sign-out keeps its own bucket, so an
+exhausted `/me` limit cannot prevent an admin from signing out.
+
+The limiter keys on the client IP. Behind nginx/Cloudflare every request appears to come from the proxy unless Express is told how many hops to trust. Set `TRUST_PROXY` in `.env` to the number of proxies in front of the app (`1` for a single nginx hop, `0` when reached directly). Do **not** use `true`: a client could then spoof `X-Forwarded-For` and bypass the limiter. In production the app refuses to start when `TRUST_PROXY` is unset, and refuses non-`https://` values in `ADMIN_FRONTEND_ORIGIN`.
+
+**Known limitation:** all counters are held in memory in a single process. Restarting the app
+clears them, and multiple instances each keep their own counters (a client gets one bucket per
+instance). Before running more than one instance, move the throttler storage to a shared store
+(for example Redis via `@nestjs/throttler-storage-redis`).
 
 
 ## Admin Dashboard
@@ -553,9 +604,13 @@ The limiter keys on the client IP, which Nest reads from the socket. Behind ngin
 A separate React + TypeScript + Vite app in `admin/` manages the product and service
 catalogue. It uses the same session cookies and CSRF contract as the API — there is no
 second auth system and no token is ever written to `localStorage`/`sessionStorage`.
+The sidebar offers **Sign out** (current browser only) and **Sign out everywhere**
+(revokes every session for the account, behind a confirmation dialog).
 
-The public website in `public/` is still served by NestJS and the admin app is built
-and hosted separately. The Collections grid on the homepage now loads active products
+The public website in `public/` is still served by NestJS. In production the admin build is
+served by the same NestJS process at `/admin`, so the dashboard and the API share one origin
+(and one set of cookies). For local development the Vite dev server runs separately on
+`:5173`. The Collections grid on the homepage now loads active products
 and services from `GET /api/products` and `GET /api/services`; the six cards in
 `index.html` remain as the no-JS / API-failure fallback.
 
@@ -584,12 +639,13 @@ cd admin
 npm run build      # tsc --noEmit && vite build → admin/dist/
 ```
 
-Serve `admin/dist/` from any static host, or behind the same reverse proxy as the API.
-When the admin build is served from a different origin than the API, that origin must be
-listed in `ADMIN_FRONTEND_ORIGIN` for credentialed CORS to work.
+The build uses `/admin/` as its base path. NestJS serves `admin/dist` at `/admin` when it
+exists, with an SPA fallback for deep links (`/admin/products`, `/admin/login`). Keep the
+directory next to `dist/` when deploying. If you host the admin elsewhere instead, that
+origin must be listed in `ADMIN_FRONTEND_ORIGIN` for credentialed CORS to work.
 
-Sign in at `/login` with the account created by `npm run db:seed`. There is no public
-registration.
+Sign in at `/admin/login` in production (`/login` on the Vite dev server) with the account
+created by `npm run db:seed`. There is no public registration.
 
 ### Environment variables
 
@@ -597,8 +653,11 @@ registration.
 |---|---|---|---|
 | `DATABASE_URL` | server `.env` | — | PostgreSQL connection string (required) |
 | `SESSION_TTL_HOURS` | server `.env` | `8` | Admin session lifetime, max 720 |
-| `ADMIN_FRONTEND_ORIGIN` | server `.env` | `http://localhost:5173` | Comma-separated CORS allowlist for credentialed requests |
+| `SESSION_IDLE_TTL_MINUTES` | server `.env` | `30` | Sign the admin out after this many idle minutes |
+| `ADMIN_FRONTEND_ORIGIN` | server `.env` | `http://localhost:5173` | Comma-separated CORS allowlist and login `Origin` allowlist |
 | `UPLOAD_DIR` | server `.env` | `uploads` | Directory for uploaded images (relative to the process cwd) |
+| `BIND_HOST` | server `.env` | `0.0.0.0` | Interface to listen on; required in production (`127.0.0.1` behind a local proxy) |
+| `TRUST_PROXY` | server `.env` | `0` | Proxy hops Express trusts; required in production (`1` behind one nginx) |
 | `VITE_API_BASE_URL` | `admin/.env` | empty | Absolute API origin; empty means "same origin / Vite proxy" |
 
 `.env` files are git-ignored; only the `.env.example` files are committed.
@@ -621,8 +680,19 @@ uploads/
 - The database stores the public path (`imageUrl`, e.g. `/uploads/products/<uuid>.png`) and
   the stored filename (`imageFilename`). No binary data is stored in PostgreSQL.
 - NestJS serves `uploads/` at `/uploads` with `index: false`, `redirect: false`,
-  `dotfiles: 'deny'`, a 7-day cache, `X-Content-Type-Options: nosniff` and a restrictive
-  CSP, so the directory cannot be listed or executed.
+  `dotfiles: 'deny'`, a 7-day `immutable` cache, `X-Content-Type-Options: nosniff` and a
+  restrictive CSP, so the directory cannot be listed or executed.
+
+**Allowed image URLs:** catalogue records may only reference files uploaded through the
+admin dashboard. `imageUrl` must match the canonical form
+`/uploads/{products|services}/<uuid>.<jpg|jpeg|png|webp|avif>`, where `<uuid>` is a strict
+8-4-4-4-12 hex UUID (the filename the uploader generates). External hosts, protocol-relative
+URLs (`//host/...`), `javascript:`/`data:`/`file:` schemes, query strings or fragments,
+`/assets/...`, encoded or plain `..` traversal, arbitrary non-UUID filenames and other
+extensions are rejected with `400`. `imageFilename`, when sent, must itself be a UUID file
+name with an allowed extension. The patterns are shared by both DTOs
+(`src/common/image-url.ts`). The admin form only offers file upload, so this does not change
+the workflow.
 
 **Upload rules:** single image per request, 5 MB maximum, JPEG/PNG/WebP/AVIF only. The MIME
 type and the magic bytes are both checked; SVG, HTML and executables are rejected with
@@ -632,11 +702,26 @@ type and the magic bytes are both checked; SVG, HTML and executables are rejecte
 
 1. The admin form uploads the new image (`POST /api/admin/uploads/{products|services}`).
 2. It then creates or updates the record with the returned `imageUrl`/`imageFilename`.
-3. On update, the previous file is deleted after the database write succeeds.
-4. If the database write fails, the just-uploaded file is deleted again.
-5. On record delete, the image file is removed after the row is gone.
-6. Cleanup failures are logged and never block an edit or delete; a missing file is not an
-   error.
+3. Nothing is unlinked automatically on replacement, failed write or record delete. The
+   cleanup is logged as deferred instead.
+4. Reason: between a "no record references this image" check and the `unlink`, another
+   product or service could start referencing the same file, leaving a broken image. A truly
+   atomic fix would require every catalogue write to coordinate with the unlink across
+   processes, so automatic deletion is deliberately not attempted.
+5. The admin-only orphan report below is the supported way to find files that can be removed
+   manually.
+
+**Orphan report (dry run only):** `GET /api/admin/uploads/orphans` (admin session required)
+lists image files that no product or service references:
+
+```json
+{ "scanned": 7, "referenced": 6, "candidateCount": 1, "candidates": ["services/<uuid>.webp"] }
+```
+
+It deletes nothing and skips dotfiles (`.gitkeep`), directories and non-canonical names. There
+is no automatic, scheduled or age-based deletion endpoint. To clean up, review the report,
+confirm the listed files are not about to be referenced by an open form, and remove them
+manually after a backup.
 
 `uploads/` is git-ignored (only `.gitkeep` is tracked). Back it up with the database.
 
@@ -646,10 +731,16 @@ Public (active records only):
 
 | Endpoint | Method | Purpose |
 |---|---|---|
+| `/api/health` | GET | Liveness probe (`{ "status": "ok" }`); no auth, no database query |
 | `/api/products` | GET | Paginated active products (`page`, `pageSize`, `search`, `category`) |
 | `/api/products/:slug` | GET | One active product by slug |
 | `/api/services` | GET | Paginated active services |
 | `/api/services/:slug` | GET | One active service by slug |
+
+Public responses include a `categories` list derived **only from active records**, so a
+category used exclusively by hidden records does not appear. Admin list responses return every
+category, including those from inactive records. A public `category` filter can only ever match
+active rows.
 
 Admin (all behind `AdminAuthGuard`; state-changing requests also need `x-csrf-token`):
 
@@ -659,12 +750,13 @@ Admin (all behind `AdminAuthGuard`; state-changing requests also need `x-csrf-to
 | `/api/admin/products/:id` | GET | One product by UUID |
 | `/api/admin/products` | POST | Create (`409` on duplicate slug, `400` on negative price) |
 | `/api/admin/products/:id` | PATCH | Update |
-| `/api/admin/products/:id` | DELETE | Delete record + image |
+| `/api/admin/products/:id` | DELETE | Delete record (the image file is left for the orphan report) |
 | `/api/admin/products/reorder` | PATCH | Bulk `displayOrder` update: `{ "items": [{ "id": "<uuid>", "displayOrder": 1 }] }`; atomic, `400` on duplicate ids/positions, `404` on unknown ids |
 | `/api/admin/services/reorder` | PATCH | Same, for services |
 | `/api/admin/services…` | — | Same shape as products |
 | `/api/admin/uploads/products` | POST | Multipart `image` field; returns `{ imageUrl, imageFilename }` |
 | `/api/admin/uploads/services` | POST | Same, for services |
+| `/api/admin/uploads/orphans` | GET | Dry-run report of unreferenced image files (deletes nothing) |
 
 DTOs are validated globally; unknown fields are rejected. `slug` is generated from the
 name when omitted and must be unique per table.
@@ -673,7 +765,9 @@ name when omitted and must be unique per table.
 
 `src/main.ts` enables CORS only for the explicit origins in `ADMIN_FRONTEND_ORIGIN`
 (comma-separated) with `credentials: true`. There is no wildcard origin, and the public
-website is unaffected because it is same-origin.
+website is unaffected because it is same-origin. In production the admin is served at
+`/admin` on the same origin as the API, so `ADMIN_FRONTEND_ORIGIN` can be the site origin
+itself (for example `https://dheera.digimaraa.in`).
 
 - `SameSite=Lax` cookies work for `localhost:5173 → localhost:3000` and for same-site
   subdomains (e.g. `admin.example.com → api.example.com`).
@@ -693,8 +787,8 @@ website is unaffected because it is same-origin.
   would be a separate change.
 
 Uploads happen when the form is submitted, but a client that uploads and never submits can
-leave an orphan file. A periodic sweep of files not referenced by any row is the fix if
-that becomes a problem.
+leave an orphan file. Use `GET /api/admin/uploads/orphans` to list candidates (see
+[Image lifecycle](#image-storage)); nothing is deleted automatically.
 
 ### Admin tests
 
@@ -707,6 +801,24 @@ npm run build      # type-check + production build
 The suites cover the API client (cookies, CSRF echo, 401 handling), login validation and
 errors, protected routes and session restoration, list filtering/toggle/delete, and the
 form upload/create/update flow. They mock the API, so no database is needed.
+
+
+## Production deployment (HTTPS reverse proxy)
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for the complete production guide: prerequisites,
+environment checklist, build and migration commands, systemd, nginx/TLS, database and
+upload backups, restore verification, rollback and smoke tests. Deployment files live in
+`deploy/` (`nginx/` and `systemd/`).
+
+Approved layout: public site at `/`, admin at `/admin`, API at `/api` and uploads at
+`/uploads`, all on `https://dheera.digimaraa.in`. nginx terminates TLS and proxies to
+NestJS on `127.0.0.1:3000`; production requires `NODE_ENV=production`,
+`BIND_HOST=127.0.0.1`, `TRUST_PROXY=1` and an `https://` value for
+`ADMIN_FRONTEND_ORIGIN`.
+
+The repository does **not** install or verify the domain, server, nginx, TLS certificate,
+firewall rules or backups. Confirm those on the target host before calling the deployment
+production-ready.
 
 
 ## Development
@@ -725,9 +837,9 @@ npm run build
 npm run start:prod
 ```
 
-Set `PORT` to change the listening port (default `3000`) and `SESSION_TTL_HOURS` to change the admin session lifetime (default `8`). `NODE_ENV=production` switches the auth cookies to `Secure`, so production must be served over HTTPS. `ADMIN_FRONTEND_ORIGIN` sets the credentialed CORS allowlist, and `UPLOAD_DIR` sets where uploaded images are written (default `uploads`).
+Set `PORT` to change the listening port (default `3000`), `SESSION_TTL_HOURS` to change the admin session lifetime (default `8`) and `SESSION_IDLE_TTL_MINUTES` to change the inactivity timeout (default `30`). `NODE_ENV=production` switches the auth cookies to `Secure` with the `__Host-` prefix, so production must be served over HTTPS. `ADMIN_FRONTEND_ORIGIN` sets the credentialed CORS and login `Origin` allowlist, `UPLOAD_DIR` sets where uploaded images are written (default `uploads`), `TRUST_PROXY` sets how many reverse-proxy hops Express trusts (required in production), and `BIND_HOST` sets the interface to listen on (default `0.0.0.0` in development; required in production).
 
-The server resolves `public/` relative to `dist/`, so deploy `public/` alongside `dist/` (running from the project root is enough). Build and serve the admin app separately (`cd admin && npm run build`).
+The server resolves `public/` relative to `dist/`, so deploy `public/` alongside `dist/` (running from the project root is enough). Build the admin app too (`cd admin && npm run build`); NestJS serves `admin/dist` at `/admin` when it exists.
 
 Run the end-to-end tests (static delivery, assets, 404s, the live database, admin authentication, product/service CRUD and image uploads):
 

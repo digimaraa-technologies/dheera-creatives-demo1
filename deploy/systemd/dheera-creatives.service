@@ -1,0 +1,47 @@
+# Template only. NOT installed or enabled by this repository.
+# Copy to /etc/systemd/system/dheera-creatives.service, then:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now dheera-creatives
+#   sudo systemctl status dheera-creatives
+#
+# Adjust User/Group, paths and the Node binary if the server layout differs.
+
+[Unit]
+Description=Dheera Creatives website and admin API
+Documentation=file:/opt/dheera-creatives/current/DEPLOYMENT.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=dheera
+Group=dheera
+WorkingDirectory=/opt/dheera-creatives/current
+EnvironmentFile=/etc/dheera-creatives/app.env
+ExecStart=/usr/bin/node dist/main.js
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+
+# Logs go to journald; use `journalctl -u dheera-creatives`.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dheera-creatives
+
+# Minimal hardening. ReadWritePaths must contain UPLOAD_DIR.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/dheera/uploads
+
+[Install]
+WantedBy=multi-user.target
