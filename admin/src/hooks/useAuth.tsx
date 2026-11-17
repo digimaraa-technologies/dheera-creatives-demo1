@@ -20,6 +20,11 @@ interface AuthContextValue {
   login(identifier: string, password: string): Promise<void>;
   logout(): Promise<void>;
   logoutAll(): Promise<void>;
+  changePassword(
+    currentPassword: string,
+    newPassword: string,
+    confirmPassword: string,
+  ): Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -91,9 +96,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSessionExpired(false);
   }, []);
 
+  const changePassword = useCallback(
+    async (
+      currentPassword: string,
+      newPassword: string,
+      confirmPassword: string,
+    ) => {
+      // The server revokes every session, so drop local state on success.
+      await authApi.changePassword(
+        currentPassword,
+        newPassword,
+        confirmPassword,
+      );
+      setAdmin(null);
+      setStatus('anonymous');
+      setSessionExpired(false);
+    },
+    [],
+  );
+
   const value = useMemo(
-    () => ({ admin, status, sessionExpired, login, logout, logoutAll }),
-    [admin, status, sessionExpired, login, logout, logoutAll],
+    () => ({
+      admin,
+      status,
+      sessionExpired,
+      login,
+      logout,
+      logoutAll,
+      changePassword,
+    }),
+    [admin, status, sessionExpired, login, logout, logoutAll, changePassword],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

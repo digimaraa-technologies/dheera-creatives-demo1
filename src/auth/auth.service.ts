@@ -1,9 +1,15 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { compare } from 'bcryptjs';
+import { compare, hash } from 'bcryptjs';
 import { createHash, randomBytes } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { SAFE_ADMIN_SELECT, SafeAdmin } from './auth.types';
+import { ChangePasswordDto } from './dto/change-password.dto';
 import { LoginDto } from './dto/login.dto';
 
 // Checked when the account does not exist, so both login paths cost one bcrypt
@@ -164,6 +170,64 @@ export class AuthService {
 
   async logoutAll(adminId: string): Promise<void> {
     await this.prisma.session.deleteMany({ where: { adminId } });
+  }
+
+  /**
+   * Changes the password for one admin and revokes every session they own,
+   * including the caller's: the old session must not survive the change.
+   *
+   * The update is a compare-and-swap on the stored hash, so two concurrent
+   * requests cannot both apply and an outdated verification can never
+   * overwrite a newer password.
+   */
+  async changePassword(
+    adminId: string,
+    dto: ChangePasswordDto,
+  ): Promise<void> {
+    if (dto.newPassword !== dto.confirmPassword) {
+      throw new BadRequestException(
+        'New password and confirmation do not match',
+      );
+    }
+
+    const admin = await this.prisma.admin.findUnique({
+      where: { id: adminId },
+      select: { passwordHash: true },
+    });
+    if (!admin) {
+      throw new UnauthorizedException('Authentication required');
+    }
+
+    // A valid session is not enough: the caller must prove the current
+    // password, so a stolen cookie cannot lock the owner out.
+    if (!(await compare(dto.currentPassword, admin.passwordHash))) {
+      throw new BadRequestException('Current password is incorrect');
+    }
+
+    // Compare through bcrypt, not strings: a value that only differs after
+    // byte 72 maps to the same credential.
+    if (await compare(dto.newPassword, admin.passwordHash)) {
+      throw new BadRequestException(
+        'New password must be different from the current password',
+      );
+    }
+
+    const passwordHash = await hash(dto.newPassword, 12);
+
+    await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.admin.updateMany({
+        where: { id: adminId, passwordHash: admin.passwordHash },
+        data: { passwordHash },
+      });
+      if (updated.count === 0) {
+        throw new ConflictException(
+          'Password was changed by another request. Please sign in again.',
+        );
+      }
+
+      // Only this admin's sessions; other administrators are untouched.
+      await tx.session.deleteMany({ where: { adminId } });
+    });
   }
 }
 

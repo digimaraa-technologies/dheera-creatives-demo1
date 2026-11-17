@@ -1,4 +1,4 @@
-import { LayoutDashboard, LogOut, Package, Scissors, ShieldOff, Sparkles, X } from 'lucide-react';
+import { LayoutDashboard, LogOut, Package, Scissors, ShieldCheck, ShieldOff, Sparkles, X } from 'lucide-react';
 import { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
@@ -9,6 +9,7 @@ const LINKS = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/products', label: 'Products', icon: Package, end: false },
   { to: '/services', label: 'Services', icon: Scissors, end: false },
+  { to: '/security', label: 'Security', icon: ShieldCheck, end: false },
 ];
 
 interface SidebarProps {

@@ -8,6 +8,7 @@ import { CatalogListPage } from './pages/CatalogListPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { LoginPage } from './pages/LoginPage';
 import { NotFoundPage } from './pages/NotFoundPage';
+import { SecurityPage } from './pages/SecurityPage';
 
 export function App() {
   // Builds are served under /admin, so routes and links must carry that prefix.
@@ -34,6 +35,7 @@ export function App() {
                   path="services/:id/edit"
                   element={<CatalogFormPage kind="services" />}
                 />
+                <Route path="security" element={<SecurityPage />} />
               </Route>
             </Route>
             <Route path="*" element={<NotFoundPage />} />

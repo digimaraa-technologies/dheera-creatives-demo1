@@ -632,6 +632,323 @@ describe('Admin authentication (e2e)', () => {
       mutable.isProduction = previous;
     }
   });
+
+  describe('Change password (e2e)', () => {
+    const CHANGE = '/api/auth/change-password';
+    const NEW_PASSWORD = 'a-brand-new-passphrase';
+    const created: string[] = [];
+
+    after(async () => {
+      await prisma.admin.deleteMany({ where: { id: { in: created } } });
+    });
+
+    async function newAdmin(password: string = PASSWORD): Promise<{
+      id: string;
+      username: string;
+      password: string;
+    }> {
+      const name = `__test_pw_${randomUUID().slice(0, 8)}`;
+      const admin = await prisma.admin.create({
+        data: {
+          username: name,
+          email: `${name}@example.com`,
+          passwordHash: await hash(password, 12),
+        },
+        select: { id: true },
+      });
+      created.push(admin.id);
+      return { id: admin.id, username: name, password };
+    }
+
+    function changeRequest(
+      session: request.Response,
+      body: Record<string, string>,
+    ): request.Test {
+      return request(app.getHttpServer())
+        .post(CHANGE)
+        .set('X-Forwarded-For', nextIp())
+        .set('Cookie', cookieHeader(session))
+        .set(CSRF_HEADER, csrfValue(session))
+        .send(body);
+    }
+
+    async function storedHash(adminIdValue: string): Promise<string> {
+      const row = await prisma.admin.findUnique({
+        where: { id: adminIdValue },
+        select: { passwordHash: true },
+      });
+      assert.ok(row);
+      return row.passwordHash;
+    }
+
+    function validBody(currentPassword: string): Record<string, string> {
+      return {
+        currentPassword,
+        newPassword: NEW_PASSWORD,
+        confirmPassword: NEW_PASSWORD,
+      };
+    }
+
+    it('changes the password, revokes the session and clears cookies', async () => {
+      const account = await newAdmin();
+      const session = await login(account.username, account.password).expect(200);
+
+      const response = await changeRequest(
+        session,
+        validBody(account.password),
+      ).expect(200);
+
+      assert.equal(response.body.success, true);
+      assert.equal(response.body.redirectTo, '/login');
+      assert.match(
+        cookieFor(response, SESSION_COOKIE),
+        /Expires=Thu, 01 Jan 1970/,
+      );
+      assert.match(
+        cookieFor(response, CSRF_COOKIE),
+        /Expires=Thu, 01 Jan 1970/,
+      );
+
+      await request(app.getHttpServer())
+        .get(ME)
+        .set('Cookie', cookieHeader(session))
+        .expect(401);
+
+      assert.equal(
+        await prisma.session.count({ where: { adminId: account.id } }),
+        0,
+      );
+    });
+
+    it('rejects an incorrect current password and keeps the session', async () => {
+      const account = await newAdmin();
+      const session = await login(account.username, account.password).expect(200);
+      const before = await storedHash(account.id);
+
+      const response = await changeRequest(session, {
+        currentPassword: 'definitely-not-the-password',
+        newPassword: NEW_PASSWORD,
+        confirmPassword: NEW_PASSWORD,
+      }).expect(400);
+
+      assert.equal(response.body.message, 'Current password is incorrect');
+      assert.equal(await storedHash(account.id), before);
+
+      await request(app.getHttpServer())
+        .get(ME)
+        .set('Cookie', cookieHeader(session))
+        .expect(200);
+    });
+
+    it('rejects a confirmation that does not match', async () => {
+      const account = await newAdmin();
+      const session = await login(account.username, account.password).expect(200);
+
+      const response = await changeRequest(session, {
+        currentPassword: account.password,
+        newPassword: NEW_PASSWORD,
+        confirmPassword: `${NEW_PASSWORD}-other`,
+      }).expect(400);
+
+      assert.equal(
+        response.body.message,
+        'New password and confirmation do not match',
+      );
+    });
+
+    it('rejects a new password shorter than 12 characters', async () => {
+      const account = await newAdmin();
+      const session = await login(account.username, account.password).expect(200);
+
+      const response = await changeRequest(session, {
+        currentPassword: account.password,
+        newPassword: 'short-passw',
+        confirmPassword: 'short-passw',
+      }).expect(400);
+
+      assert.match(
+        [].concat(response.body.message).join(' '),
+        /at least 12 characters/,
+      );
+    });
+
+    it('rejects a new password longer than 72 UTF-8 bytes', async () => {
+      const account = await newAdmin();
+      const session = await login(account.username, account.password).expect(200);
+      const tooLong = 'a'.repeat(73);
+
+      const response = await changeRequest(session, {
+        currentPassword: account.password,
+        newPassword: tooLong,
+        confirmPassword: tooLong,
+      }).expect(400);
+
+      assert.match(
+        [].concat(response.body.message).join(' '),
+        /at most 72 UTF-8 bytes/,
+      );
+    });
+
+    it('rejects a new password identical to the current one', async () => {
+      const account = await newAdmin();
+      const session = await login(account.username, account.password).expect(200);
+
+      const response = await changeRequest(session, {
+        currentPassword: account.password,
+        newPassword: account.password,
+        confirmPassword: account.password,
+      }).expect(400);
+
+      assert.equal(
+        response.body.message,
+        'New password must be different from the current password',
+      );
+    });
+
+    it('rejects an anonymous request', async () => {
+      await request(app.getHttpServer())
+        .post(CHANGE)
+        .set('X-Forwarded-For', nextIp())
+        .send({
+          currentPassword: PASSWORD,
+          newPassword: NEW_PASSWORD,
+          confirmPassword: NEW_PASSWORD,
+        })
+        .expect(401);
+    });
+
+    it('rejects a request without a CSRF token', async () => {
+      const account = await newAdmin();
+      const session = await login(account.username, account.password).expect(200);
+
+      await request(app.getHttpServer())
+        .post(CHANGE)
+        .set('X-Forwarded-For', nextIp())
+        .set('Cookie', cookieHeader(session))
+        .send(validBody(account.password))
+        .expect(403);
+    });
+
+    it('stores the new password as a bcrypt hash', async () => {
+      const account = await newAdmin();
+      const session = await login(account.username, account.password).expect(200);
+      const before = await storedHash(account.id);
+
+      await changeRequest(session, validBody(account.password)).expect(200);
+
+      const after = await storedHash(account.id);
+      assert.notEqual(after, before);
+      assert.match(after, /^\$2[aby]\$12\$/);
+      assert.equal(after.includes(NEW_PASSWORD), false);
+    });
+
+    it('revokes every session belonging to the admin', async () => {
+      const account = await newAdmin();
+      const first = await login(account.username, account.password).expect(200);
+      const second = await login(account.username, account.password).expect(200);
+      const direct = await issueSession(account.id);
+
+      await changeRequest(first, validBody(account.password)).expect(200);
+
+      for (const cookies of [
+        cookieHeader(first),
+        cookieHeader(second),
+        `${SESSION_COOKIE}=${direct.token}`,
+      ]) {
+        await request(app.getHttpServer())
+          .get(ME)
+          .set('Cookie', cookies)
+          .expect(401);
+      }
+
+      assert.equal(
+        await prisma.session.count({ where: { adminId: account.id } }),
+        0,
+      );
+    });
+
+    it('leaves another administrator and their sessions untouched', async () => {
+      const account = await newAdmin();
+      const other = await newAdmin();
+      const session = await login(account.username, account.password).expect(200);
+      const otherSession = await login(
+        other.username,
+        other.password,
+      ).expect(200);
+      const otherHash = await storedHash(other.id);
+
+      // A client cannot pick the target account: unknown fields are rejected.
+      await changeRequest(session, {
+        ...validBody(account.password),
+        adminId: other.id,
+      }).expect(400);
+
+      const response = await changeRequest(
+        session,
+        validBody(account.password),
+      ).expect(200);
+      assert.equal(response.body.success, true);
+
+      await request(app.getHttpServer())
+        .get(ME)
+        .set('Cookie', cookieHeader(otherSession))
+        .expect(200);
+      assert.equal(await storedHash(other.id), otherHash);
+    });
+
+    it('no longer accepts the old password for login', async () => {
+      const account = await newAdmin();
+      const session = await login(account.username, account.password).expect(200);
+
+      await changeRequest(session, validBody(account.password)).expect(200);
+
+      await login(account.username, account.password).expect(401);
+    });
+
+    it('accepts the new password for login', async () => {
+      const account = await newAdmin();
+      const session = await login(account.username, account.password).expect(200);
+
+      await changeRequest(session, validBody(account.password)).expect(200);
+
+      const response = await login(account.username, NEW_PASSWORD).expect(200);
+      assert.equal(response.body.admin.username, account.username);
+    });
+
+    it('does not let concurrent changes overwrite a newer password', async () => {
+      const account = await newAdmin();
+      const session = await login(account.username, account.password).expect(200);
+      const candidates = [NEW_PASSWORD, 'a-second-brand-new-passphrase'];
+
+      const results = await Promise.all(
+        candidates.map((newPassword) =>
+          changeRequest(session, {
+            currentPassword: account.password,
+            newPassword,
+            confirmPassword: newPassword,
+          }),
+        ),
+      );
+
+      const statuses = results.map((result) => result.status).sort();
+      assert.equal(statuses[0], 200);
+      assert.ok(
+        statuses[1] === 400 || statuses[1] === 409,
+        `unexpected second status ${statuses[1]}`,
+      );
+
+      const winner = candidates[results.findIndex((result) => result.status === 200)];
+      const loser = candidates.find((candidate) => candidate !== winner);
+      assert.ok(loser);
+
+      const after = await storedHash(account.id);
+      assert.match(after, /^\$2[aby]\$12\$/);
+
+      await login(account.username, winner).expect(200);
+      await login(account.username, loser).expect(401);
+      await login(account.username, account.password).expect(401);
+    });
+  });
 });
 
 describe('Login origin validation (e2e)', () => {

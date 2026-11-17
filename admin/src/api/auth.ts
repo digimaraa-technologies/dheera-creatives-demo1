@@ -18,6 +18,16 @@ export const authApi = {
       skipUnauthorizedEvent: true,
     });
   },
+  changePassword(
+    currentPassword: string,
+    newPassword: string,
+    confirmPassword: string,
+  ): Promise<{ success: true; redirectTo: string }> {
+    return apiRequest('/api/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword, newPassword, confirmPassword }),
+    });
+  },
   logoutAll(): Promise<{ success: true }> {
     return apiRequest('/api/auth/logout-all', {
       method: 'POST',

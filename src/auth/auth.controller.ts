@@ -23,6 +23,7 @@ import {
 import { AuthService } from './auth.service';
 import { AuthenticatedRequest, SafeAdmin } from './auth.types';
 import { CurrentAdmin } from './decorators/current-admin.decorator';
+import { ChangePasswordDto } from './dto/change-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { AdminAuthGuard } from './guards/admin-auth.guard';
 import { LoginOriginGuard } from './guards/login-origin.guard';
@@ -78,6 +79,23 @@ export class AuthController {
   @Throttle({ default: RATE_LIMITS.session })
   me(@CurrentAdmin() admin: SafeAdmin): { admin: SafeAdmin } {
     return { admin };
+  }
+
+  @Post('change-password')
+  @HttpCode(200)
+  @UseGuards(AdminAuthGuard, ThrottlerGuard)
+  @Throttle({ default: RATE_LIMITS.adminWrite })
+  async changePassword(
+    @Body() dto: ChangePasswordDto,
+    // The account always comes from the validated session, never the body.
+    @CurrentAdmin() admin: SafeAdmin,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<{ success: true; redirectTo: '/login' }> {
+    await this.auth.changePassword(admin.id, dto);
+
+    // Every session is revoked now, including this one.
+    this.clearAuthCookies(response);
+    return { success: true, redirectTo: '/login' };
   }
 
   @Post('logout')

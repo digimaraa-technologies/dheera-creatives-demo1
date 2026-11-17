@@ -9,6 +9,7 @@ const TITLES: Array<[RegExp, string]> = [
   [/^\/services\/new$/, 'Add service'],
   [/^\/services\/[^/]+\/edit$/, 'Edit service'],
   [/^\/services/, 'Services'],
+  [/^\/security$/, 'Security'],
 ];
 
 export function Header({ onMenu }: { onMenu(): void }) {
