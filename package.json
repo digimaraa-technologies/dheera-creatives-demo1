@@ -13,7 +13,7 @@
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main",
-    "test": "tsc -p tsconfig.test.json && node --test --test-concurrency=1 .test-dist/test/app.e2e-spec.js .test-dist/test/database.e2e-spec.js .test-dist/test/auth.e2e-spec.js .test-dist/test/products.e2e-spec.js .test-dist/test/services.e2e-spec.js .test-dist/test/reorder.e2e-spec.js .test-dist/test/uploads.e2e-spec.js .test-dist/test/public-catalog.e2e-spec.js",
+    "test": "tsc -p tsconfig.test.json && node --test --test-concurrency=1 .test-dist/test/app.e2e-spec.js .test-dist/test/database.e2e-spec.js .test-dist/test/auth.e2e-spec.js .test-dist/test/products.e2e-spec.js .test-dist/test/services.e2e-spec.js .test-dist/test/reorder.e2e-spec.js .test-dist/test/uploads.e2e-spec.js .test-dist/test/public-catalog.e2e-spec.js .test-dist/test/hardening.e2e-spec.js .test-dist/test/phase3.e2e-spec.js",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
     "db:seed": "prisma db seed",

@@ -10,6 +10,7 @@ import {
   SESSION_COOKIE,
 } from '../../src/auth/auth.cookies';
 import { AppModule } from '../../src/app.module';
+import { hardenApp } from '../../src/common/security-headers';
 import { PrismaService } from '../../src/prisma/prisma.service';
 import { serveUploads } from '../../src/uploads/uploads.static';
 
@@ -40,10 +41,17 @@ export function nextIp(): string {
   return `10.2.${Math.floor(ipCounter / 250)}.${(ipCounter % 250) + 1}`;
 }
 
+/** Origin the login origin guard expects in the current configuration. */
+export function adminOrigin(): string {
+  const configured = process.env.ADMIN_FRONTEND_ORIGIN?.split(',')[0]?.trim();
+  return configured || 'http://localhost:5173';
+}
+
 export async function createTestContext(options: {
   uploadDir?: string;
   serveUploads?: boolean;
   servePublic?: boolean;
+  trustProxy?: number | boolean;
 } = {}): Promise<TestContext> {
   if (options.uploadDir) {
     process.env.UPLOAD_DIR = options.uploadDir;
@@ -54,7 +62,11 @@ export async function createTestContext(options: {
   }).compile();
 
   const app = moduleRef.createNestApplication<NestExpressApplication>();
-  app.set('trust proxy', true);
+  // Mirror the real server: security headers, cache-control and trusted proxy.
+  hardenApp(app, {
+    isProduction: process.env.NODE_ENV === 'production',
+    trustProxy: options.trustProxy ?? true,
+  });
   if (options.servePublic) {
     app.useStaticAssets(join(process.cwd(), 'public'), { index: 'index.html' });
   }
@@ -81,6 +93,7 @@ export async function createTestContext(options: {
       const response = await request(app.getHttpServer())
         .post('/api/auth/login')
         .set('X-Forwarded-For', nextIp())
+        .set('Origin', adminOrigin())
         .send({ identifier: username, password: TEST_PASSWORD })
         .expect(200);
 

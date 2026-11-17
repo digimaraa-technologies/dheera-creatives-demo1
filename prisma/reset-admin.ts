@@ -1,10 +1,10 @@
 import { Prisma, PrismaClient } from '@prisma/client';
 import { hash } from 'bcryptjs';
+import { MAX_PASSWORD_BYTES, isPasswordWithinBcryptLimit } from '../src/auth/password';
 
 // Must match prisma/seed.ts and the LoginDto limits.
 const SALT_ROUNDS = 12;
 const MIN_PASSWORD_LENGTH = 12;
-const MAX_PASSWORD_LENGTH = 128;
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -27,9 +27,9 @@ async function main(): Promise<void> {
   if (email.length > 254 || !EMAIL_PATTERN.test(email)) {
     throw new Error('ADMIN_EMAIL is not a valid email address.');
   }
-  if (password.length < MIN_PASSWORD_LENGTH || password.length > MAX_PASSWORD_LENGTH) {
+  if (password.length < MIN_PASSWORD_LENGTH || !isPasswordWithinBcryptLimit(password)) {
     throw new Error(
-      `ADMIN_PASSWORD must be between ${MIN_PASSWORD_LENGTH} and ${MAX_PASSWORD_LENGTH} characters.`,
+      `ADMIN_PASSWORD must be at least ${MIN_PASSWORD_LENGTH} characters and at most ${MAX_PASSWORD_BYTES} UTF-8 bytes.`,
     );
   }
 

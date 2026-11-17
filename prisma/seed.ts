@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { hash } from 'bcryptjs';
+import { MAX_PASSWORD_BYTES, isPasswordWithinBcryptLimit } from '../src/auth/password';
 
 const SALT_ROUNDS = 12;
 const MIN_PASSWORD_LENGTH = 12;
@@ -20,6 +21,11 @@ async function main(): Promise<void> {
   if (password.length < MIN_PASSWORD_LENGTH) {
     throw new Error(
       `ADMIN_PASSWORD must be at least ${MIN_PASSWORD_LENGTH} characters.`,
+    );
+  }
+  if (!isPasswordWithinBcryptLimit(password)) {
+    throw new Error(
+      `ADMIN_PASSWORD must be at most ${MAX_PASSWORD_BYTES} UTF-8 bytes (bcrypt limit).`,
     );
   }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
