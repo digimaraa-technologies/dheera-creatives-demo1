@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { after, before, describe, it } from 'node:test';
+import { after, before, describe, it, mock } from 'node:test';
 import { Test } from '@nestjs/testing';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { hash } from 'bcryptjs';
@@ -20,6 +20,7 @@ import {
   passwordByteLength,
 } from '../src/auth/password';
 import { AuthService } from '../src/auth/auth.service';
+import { PasswordChangeAttemptsService } from '../src/auth/password-change-attempts.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { adminOrigin } from './helpers/admin-session';
 
@@ -947,6 +948,272 @@ describe('Admin authentication (e2e)', () => {
       await login(account.username, winner).expect(200);
       await login(account.username, loser).expect(401);
       await login(account.username, account.password).expect(401);
+    });
+
+    const LOCKOUT_MESSAGE =
+      'Too many incorrect password attempts. Please try again after the temporary security lockout.';
+    const BUSY_MESSAGE =
+      'Too many password change requests. Please try again shortly.';
+
+    function wrongPasswordBody(): Record<string, string> {
+      return {
+        currentPassword: 'definitely-not-the-password',
+        newPassword: NEW_PASSWORD,
+        confirmPassword: NEW_PASSWORD,
+      };
+    }
+
+    it('locks the account after 10 failed current-password attempts', async () => {
+      const account = await newAdmin();
+      const session = await login(account.username, account.password).expect(200);
+
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        const response = await changeRequest(session, wrongPasswordBody()).expect(400);
+        assert.equal(response.body.message, 'Current password is incorrect');
+      }
+
+      const locked = await changeRequest(session, wrongPasswordBody()).expect(429);
+      assert.equal(locked.body.message, LOCKOUT_MESSAGE);
+
+      // Checked before bcrypt: even the correct current password is refused.
+      await changeRequest(session, validBody(account.password)).expect(429);
+
+      await request(app.getHttpServer())
+        .get(ME)
+        .set('Cookie', cookieHeader(session))
+        .expect(200);
+    });
+
+    it('does not let IP rotation bypass the account-level lockout', async () => {
+      const account = await newAdmin();
+      const session = await login(account.username, account.password).expect(200);
+      const cookies = cookieHeader(session);
+      const csrf = csrfValue(session);
+
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        await request(app.getHttpServer())
+          .post(CHANGE)
+          .set('X-Forwarded-For', `203.0.${Math.floor(attempt / 250)}.${(attempt % 250) + 1}`)
+          .set('Cookie', cookies)
+          .set(CSRF_HEADER, csrf)
+          .send(wrongPasswordBody())
+          .expect(400);
+      }
+
+      await request(app.getHttpServer())
+        .post(CHANGE)
+        .set('X-Forwarded-For', '198.51.100.200')
+        .set('Cookie', cookies)
+        .set(CSRF_HEADER, csrf)
+        .send(wrongPasswordBody())
+        .expect(429);
+    });
+
+    it('keeps change-password lockout counters independent per administrator', async () => {
+      const a = await newAdmin();
+      const b = await newAdmin();
+      const sessionA = await login(a.username, a.password).expect(200);
+      const sessionB = await login(b.username, b.password).expect(200);
+
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        await changeRequest(sessionA, wrongPasswordBody()).expect(400);
+      }
+      await changeRequest(sessionA, wrongPasswordBody()).expect(429);
+
+      await changeRequest(sessionB, validBody(b.password)).expect(200);
+      await login(b.username, NEW_PASSWORD).expect(200);
+
+      // Existing login protection remains independent of password-change counters.
+      await login(a.username, a.password).expect(200);
+    });
+
+    it('unlocks the account after the 15 minute lockout window expires', async () => {
+      const account = await newAdmin();
+      mock.timers.enable({ apis: ['Date'] });
+      try {
+        // Re-login after enabling fake timers so cookie/session expiries stay valid.
+        const session = await login(account.username, account.password).expect(200);
+
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+          await changeRequest(session, wrongPasswordBody()).expect(400);
+        }
+        await changeRequest(session, wrongPasswordBody()).expect(429);
+
+        mock.timers.tick(15 * 60 * 1000 + 1);
+
+        const response = await changeRequest(session, wrongPasswordBody()).expect(400);
+        assert.equal(response.body.message, 'Current password is incorrect');
+      } finally {
+        mock.timers.reset();
+      }
+    });
+
+    it('resets the change-password failure state after a successful change', async () => {
+      const account = await newAdmin();
+      const session = await login(account.username, account.password).expect(200);
+
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await changeRequest(session, wrongPasswordBody()).expect(400);
+      }
+
+      await changeRequest(session, validBody(account.password)).expect(200);
+      const nextSession = await login(account.username, NEW_PASSWORD).expect(200);
+
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        const response = await changeRequest(nextSession, {
+          currentPassword: 'definitely-not-the-password',
+          newPassword: 'another-brand-new-passphrase',
+          confirmPassword: 'another-brand-new-passphrase',
+        }).expect(400);
+        assert.equal(response.body.message, 'Current password is incorrect');
+      }
+      await changeRequest(nextSession, {
+        currentPassword: 'definitely-not-the-password',
+        newPassword: 'another-brand-new-passphrase',
+        confirmPassword: 'another-brand-new-passphrase',
+      }).expect(429);
+    });
+
+    it('does not let concurrent incorrect attempts bypass the threshold', async () => {
+      const account = await newAdmin();
+      const session = await login(account.username, account.password).expect(200);
+      const cookies = cookieHeader(session);
+      const csrf = csrfValue(session);
+
+      const results = await Promise.all(
+        Array.from({ length: 20 }, (_, attempt) =>
+          request(app.getHttpServer())
+            .post(CHANGE)
+            .set('X-Forwarded-For', `10.77.0.${attempt + 1}`)
+            .set('Cookie', cookies)
+            .set(CSRF_HEADER, csrf)
+            .send(wrongPasswordBody()),
+        ),
+      );
+
+      const statuses = results.map((result) => result.status).sort((a, b) => a - b);
+      assert.deepEqual(
+        statuses,
+        [400, 400, 400, 400, 400, 400, 400, 400, 400, 400, 429, 429, 429, 429, 429, 429, 429, 429, 429, 429],
+      );
+
+      const incorrect = results.filter((result) => result.status === 400);
+      const rejected = results.filter((result) => result.status === 429);
+      assert.equal(incorrect.length, 10);
+      assert.equal(rejected.length, 10);
+      for (const result of incorrect) {
+        assert.equal(result.body.message, 'Current password is incorrect');
+      }
+      // Excess concurrent requests are rejected immediately for queue capacity
+      // (not admitted/queued), so they do not increment the failure counter.
+      for (const result of rejected) {
+        assert.equal(result.body.message, BUSY_MESSAGE);
+      }
+
+      // The 10 admitted incorrect verifications lock the account.
+      const locked = await changeRequest(session, wrongPasswordBody()).expect(429);
+      assert.equal(locked.body.message, LOCKOUT_MESSAGE);
+    });
+
+    it('does not increment the counter for invalid CSRF, validation or malformed requests', async () => {
+      const account = await newAdmin();
+      const session = await login(account.username, account.password).expect(200);
+      const cookies = cookieHeader(session);
+      const csrf = csrfValue(session);
+
+      await request(app.getHttpServer())
+        .post(CHANGE)
+        .set('X-Forwarded-For', nextIp())
+        .set('Cookie', cookies)
+        .send(wrongPasswordBody())
+        .expect(403);
+
+      await request(app.getHttpServer())
+        .post(CHANGE)
+        .set('X-Forwarded-For', nextIp())
+        .set('Cookie', cookies)
+        .set(CSRF_HEADER, csrf)
+        .send({ currentPassword: account.password, newPassword: 'short-passw', confirmPassword: 'short-passw' })
+        .expect(400);
+
+      await request(app.getHttpServer())
+        .post(CHANGE)
+        .set('X-Forwarded-For', nextIp())
+        .set('Cookie', cookies)
+        .set(CSRF_HEADER, csrf)
+        .send({ currentPassword: account.password, newPassword: NEW_PASSWORD, confirmPassword: NEW_PASSWORD, adminId: account.id })
+        .expect(400);
+
+      await request(app.getHttpServer())
+        .post(CHANGE)
+        .set('X-Forwarded-For', nextIp())
+        .set('Cookie', cookies)
+        .set(CSRF_HEADER, csrf)
+        .set('Content-Type', 'application/json')
+        .send('{"currentPassword":')
+        .expect(400);
+
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        await changeRequest(session, wrongPasswordBody()).expect(400);
+      }
+      await changeRequest(session, wrongPasswordBody()).expect(429);
+    });
+
+    it('does not increment the counter for anonymous requests', async () => {
+      const account = await newAdmin();
+
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await request(app.getHttpServer())
+          .post(CHANGE)
+          .set('X-Forwarded-For', nextIp())
+          .send(wrongPasswordBody())
+          .expect(401);
+      }
+
+      const session = await login(account.username, account.password).expect(200);
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        await changeRequest(session, wrongPasswordBody()).expect(400);
+      }
+      await changeRequest(session, wrongPasswordBody()).expect(429);
+    });
+
+    it('keeps the existing per-IP change-password throttle active', async () => {
+      const account = await newAdmin();
+      const session = await login(account.username, account.password).expect(200);
+      const cookies = cookieHeader(session);
+      const csrf = csrfValue(session);
+      const ip = '198.51.100.77';
+
+      // Invalid DTO requests exercise the per-IP guard without incrementing the
+      // account-level wrong-current-password counter.
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        await request(app.getHttpServer())
+          .post(CHANGE)
+          .set('X-Forwarded-For', ip)
+          .set('Cookie', cookies)
+          .set(CSRF_HEADER, csrf)
+          .send({})
+          .expect(400);
+      }
+
+      const limited = await request(app.getHttpServer())
+        .post(CHANGE)
+        .set('X-Forwarded-For', ip)
+        .set('Cookie', cookies)
+        .set(CSRF_HEADER, csrf)
+        .send({})
+        .expect(429);
+      assert.equal(limited.body.message, 'Too many requests');
+
+      // A different IP can still reach the account-level protection path.
+      const wrong = await request(app.getHttpServer())
+        .post(CHANGE)
+        .set('X-Forwarded-For', nextIp())
+        .set('Cookie', cookies)
+        .set(CSRF_HEADER, csrf)
+        .send(wrongPasswordBody())
+        .expect(400);
+      assert.equal(wrong.body.message, 'Current password is incorrect');
     });
   });
 });

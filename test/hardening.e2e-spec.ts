@@ -12,6 +12,7 @@ import express from 'express';
 import request from 'supertest';
 import { serveAdmin } from '../src/admin/admin.static';
 import { AppModule } from '../src/app.module';
+import { AuthService } from '../src/auth/auth.service';
 import { CSRF_HEADER } from '../src/auth/auth.cookies';
 import {
   LOGIN_ATTEMPT_CAPACITY,
@@ -19,6 +20,15 @@ import {
   LOGIN_ATTEMPT_WINDOW_MS,
   LoginAttemptsService,
 } from '../src/auth/login-attempts.service';
+import {
+  PASSWORD_CHANGE_ATTEMPT_CAPACITY,
+  PASSWORD_CHANGE_ATTEMPT_MAX_FAILURES,
+  PASSWORD_CHANGE_ATTEMPT_WINDOW_MS,
+  PASSWORD_CHANGE_BUSY_MESSAGE,
+  PASSWORD_CHANGE_MAX_ADMITTED_PER_ADMIN,
+  PasswordChangeAttemptsService,
+} from '../src/auth/password-change-attempts.service';
+import { hash } from 'bcryptjs';
 import { PrismaExceptionFilter } from '../src/common/prisma-exception.filter';
 import { hardenApp, securityHeaders } from '../src/common/security-headers';
 import { validateEnvironment } from '../src/config/env.validation';
@@ -292,6 +302,376 @@ describe('LoginAttemptsService', () => {
 
     // A successful login does not need a new entry, so capacity cannot block it.
     attempts.assertAllowed('untracked-user');
+  });
+});
+
+describe('PasswordChangeAttemptsService', () => {
+  it('locks after 10 failures and unlocks on reset', () => {
+    const attempts = new PasswordChangeAttemptsService();
+
+    for (let failure = 0; failure < PASSWORD_CHANGE_ATTEMPT_MAX_FAILURES - 1; failure += 1) {
+      attempts.recordFailure('admin-a');
+    }
+    attempts.assertAllowed('admin-a');
+
+    attempts.recordFailure('admin-a');
+    assert.throws(
+      () => attempts.assertAllowed('admin-a'),
+      /Too many incorrect password attempts/,
+    );
+
+    attempts.reset('admin-a');
+    attempts.assertAllowed('admin-a');
+  });
+
+  it('drops an admin once the 15 minute window has passed', () => {
+    mock.timers.enable({ apis: ['Date'] });
+    try {
+      const attempts = new PasswordChangeAttemptsService();
+
+      for (let failure = 0; failure < PASSWORD_CHANGE_ATTEMPT_MAX_FAILURES; failure += 1) {
+        attempts.recordFailure('admin-a');
+      }
+      assert.throws(
+        () => attempts.assertAllowed('admin-a'),
+        /Too many incorrect password attempts/,
+      );
+
+      mock.timers.tick(PASSWORD_CHANGE_ATTEMPT_WINDOW_MS + 1);
+
+      attempts.assertAllowed('admin-a');
+      assert.equal(attempts.trackedCount, 0);
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it('cleans up expired entries and preserves active lockouts', () => {
+    mock.timers.enable({ apis: ['Date'] });
+    try {
+      const attempts = new PasswordChangeAttemptsService();
+      attempts.recordFailure('expired-admin');
+
+      mock.timers.tick(PASSWORD_CHANGE_ATTEMPT_WINDOW_MS + 1);
+
+      // Create an active lockout after the old entry expired.
+      for (let failure = 0; failure < PASSWORD_CHANGE_ATTEMPT_MAX_FAILURES; failure += 1) {
+        attempts.recordFailure('locked-admin');
+      }
+
+      // Trigger cleanup path: adding a new untracked admin sweeps expired state.
+      attempts.recordFailure('fresh-admin');
+
+      assert.equal(attempts.trackedCount, 2);
+      assert.throws(
+        () => attempts.assertAllowed('locked-admin'),
+        /Too many incorrect password attempts/,
+      );
+      attempts.assertAllowed('expired-admin');
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it('bounds tracked admins and never evicts active lockouts', () => {
+    const attempts = new PasswordChangeAttemptsService();
+
+    for (let index = 0; index < PASSWORD_CHANGE_ATTEMPT_CAPACITY; index += 1) {
+      for (let failure = 0; failure < PASSWORD_CHANGE_ATTEMPT_MAX_FAILURES; failure += 1) {
+        attempts.recordFailure(`admin-${index}`);
+      }
+    }
+    assert.equal(attempts.trackedCount, PASSWORD_CHANGE_ATTEMPT_CAPACITY);
+
+    // A failure for an untracked admin is refused, not dropped, and must not
+    // evict an existing (active) lockout.
+    assert.throws(
+      () => attempts.recordFailure('one-too-many'),
+      /Too many incorrect password attempts/,
+    );
+    assert.equal(attempts.trackedCount, PASSWORD_CHANGE_ATTEMPT_CAPACITY);
+    assert.throws(
+      () => attempts.assertAllowed('admin-0'),
+      /Too many incorrect password attempts/,
+    );
+  });
+
+  it('serializes per-admin work so concurrent attempts cannot bypass the threshold', async () => {
+    const attempts = new PasswordChangeAttemptsService();
+    let verifications = 0;
+
+    const attempt = () =>
+      attempts.runExclusive('admin-a', async () => {
+        attempts.assertAllowed('admin-a');
+        verifications += 1;
+        await Promise.resolve();
+        attempts.recordFailure('admin-a');
+      });
+
+    const results = await Promise.allSettled(
+      Array.from({ length: 20 }, () => attempt()),
+    );
+
+    // 10 admitted and serialized to completion (10 verified failures recorded);
+    // excess concurrent requests are rejected immediately for queue capacity.
+    assert.equal(verifications, PASSWORD_CHANGE_ATTEMPT_MAX_FAILURES);
+    assert.equal(results.filter((r) => r.status === 'fulfilled').length, 10);
+    const rejected = results.filter(
+      (r): r is PromiseRejectedResult => r.status === 'rejected',
+    );
+    assert.equal(rejected.length, 10);
+    for (const result of rejected) {
+      assert.equal(result.reason?.getStatus?.(), 429);
+      assert.equal(result.reason?.message, PASSWORD_CHANGE_BUSY_MESSAGE);
+    }
+    assert.equal(attempts.inflightCount('admin-a'), 0);
+    assert.throws(
+      () => attempts.assertAllowed('admin-a'),
+      /Too many incorrect password attempts/,
+    );
+  });
+
+  it('enforces the max admitted operations per admin and rejects excess immediately', async () => {
+    const attempts = new PasswordChangeAttemptsService();
+    let started = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const admitted = Array.from({ length: PASSWORD_CHANGE_MAX_ADMITTED_PER_ADMIN }, () =>
+      attempts.runExclusive('admin-a', async () => {
+        started += 1;
+        await gate;
+      }),
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(started, 1);
+    assert.equal(
+      attempts.inflightCount('admin-a'),
+      PASSWORD_CHANGE_MAX_ADMITTED_PER_ADMIN,
+    );
+
+    await assert.rejects(
+      () => attempts.runExclusive('admin-a', async () => undefined),
+      (error: any) =>
+        error?.getStatus?.() === 429 &&
+        error?.message === PASSWORD_CHANGE_BUSY_MESSAGE,
+    );
+    assert.equal(
+      attempts.inflightCount('admin-a'),
+      PASSWORD_CHANGE_MAX_ADMITTED_PER_ADMIN,
+    );
+
+    release();
+    await Promise.all(admitted);
+    assert.equal(attempts.inflightCount('admin-a'), 0);
+  });
+
+  it('releases queue capacity after completion and after synchronous/asynchronous failures', async () => {
+    const attempts = new PasswordChangeAttemptsService();
+
+    for (let i = 0; i < PASSWORD_CHANGE_MAX_ADMITTED_PER_ADMIN; i += 1) {
+      await attempts.runExclusive('admin-a', async () => undefined);
+    }
+    assert.equal(attempts.inflightCount('admin-a'), 0);
+
+    await assert.rejects(
+      () =>
+        attempts.runExclusive('admin-a', () => {
+          throw new Error('sync-fail');
+        }),
+      /sync-fail/,
+    );
+    assert.equal(attempts.inflightCount('admin-a'), 0);
+
+    await assert.rejects(
+      () =>
+        attempts.runExclusive('admin-a', async () => {
+          throw new Error('async-fail');
+        }),
+      /async-fail/,
+    );
+    assert.equal(attempts.inflightCount('admin-a'), 0);
+
+    // A subsequent request proceeds after failed operations.
+    let ran = false;
+    await attempts.runExclusive('admin-a', async () => {
+      ran = true;
+    });
+    assert.equal(ran, true);
+    assert.equal(attempts.inflightCount('admin-a'), 0);
+  });
+
+  it('keeps queue limits independent per administrator', async () => {
+    const attempts = new PasswordChangeAttemptsService();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const admittedA = Array.from(
+      { length: PASSWORD_CHANGE_MAX_ADMITTED_PER_ADMIN },
+      () => attempts.runExclusive('admin-a', async () => gate),
+    );
+
+    await assert.rejects(
+      () => attempts.runExclusive('admin-a', async () => undefined),
+      (error: any) => error?.message === PASSWORD_CHANGE_BUSY_MESSAGE,
+    );
+
+    let ranB = false;
+    await attempts.runExclusive('admin-b', async () => {
+      ranB = true;
+    });
+    assert.equal(ranB, true);
+
+    release();
+    await Promise.all(admittedA);
+  });
+});
+
+describe('Change password lockout counter integrity', () => {
+  const adminId = 'admin-db-failure';
+  const currentPassword = 'current-password-1234';
+  const newPassword = 'brand-new-password-1234';
+
+  async function createService(options: {
+    findUnique: (...args: any[]) => any;
+    transaction?: (...args: any[]) => any;
+  }): Promise<{
+    service: AuthService;
+    attempts: PasswordChangeAttemptsService;
+  }> {
+    const attempts = new PasswordChangeAttemptsService();
+    const prisma = {
+      admin: { findUnique: options.findUnique },
+      $transaction:
+        options.transaction ??
+        (async () => {
+          throw new Error('transaction should not run');
+        }),
+    } as any;
+    const config = { get: () => undefined } as any;
+    return { service: new AuthService(prisma, attempts, config), attempts };
+  }
+
+  function dto(overrides: Record<string, string> = {}) {
+    return {
+      currentPassword,
+      newPassword,
+      confirmPassword: newPassword,
+      ...overrides,
+    } as any;
+  }
+
+  it('checks lockout before bcrypt verification and skips DB/bcrypt when locked', async () => {
+    let findCalls = 0;
+    const { service, attempts } = await createService({
+      findUnique: async () => {
+        findCalls += 1;
+        return { passwordHash: await hash(currentPassword, 12) };
+      },
+    });
+
+    for (let failure = 0; failure < PASSWORD_CHANGE_ATTEMPT_MAX_FAILURES; failure += 1) {
+      attempts.recordFailure(adminId);
+    }
+
+    await assert.rejects(
+      () => service.changePassword(adminId, dto()),
+      (error: any) =>
+        error?.getStatus?.() === 429 &&
+        /Too many incorrect password attempts/.test(error?.message),
+    );
+    assert.equal(findCalls, 0);
+  });
+
+  it('does not increment or reset the counter when loading the admin fails', async () => {
+    const { service, attempts } = await createService({
+      findUnique: async () => {
+        throw new Error('db read failed');
+      },
+    });
+
+    await assert.rejects(() => service.changePassword(adminId, dto()), /db read failed/);
+    assert.equal(attempts.trackedCount, 0);
+
+    for (let failure = 0; failure < PASSWORD_CHANGE_ATTEMPT_MAX_FAILURES - 1; failure += 1) {
+      attempts.recordFailure(adminId);
+    }
+    await assert.rejects(() => service.changePassword(adminId, dto()), /db read failed/);
+    attempts.assertAllowed(adminId);
+  });
+
+  it('does not increment or reset the counter when the password-change transaction fails', async () => {
+    const passwordHash = await hash(currentPassword, 12);
+    const { service, attempts } = await createService({
+      findUnique: async () => ({ passwordHash }),
+      transaction: async () => {
+        throw new Error('db write failed');
+      },
+    });
+
+    attempts.recordFailure(adminId);
+    attempts.recordFailure(adminId);
+
+    await assert.rejects(
+      () => service.changePassword(adminId, dto()),
+      /db write failed/,
+    );
+
+    // Prior failures preserved (not reset) and no extra increment from a DB error.
+    for (let failure = 2; failure < PASSWORD_CHANGE_ATTEMPT_MAX_FAILURES - 1; failure += 1) {
+      attempts.recordFailure(adminId);
+    }
+    attempts.assertAllowed(adminId);
+    attempts.recordFailure(adminId);
+    assert.throws(
+      () => attempts.assertAllowed(adminId),
+      /Too many incorrect password attempts/,
+    );
+  });
+
+  it('rejects queue-saturated requests immediately without incrementing the counter or verifying', async () => {
+    let findCalls = 0;
+    const { service, attempts } = await createService({
+      findUnique: async () => {
+        findCalls += 1;
+        return { passwordHash: await hash(currentPassword, 12) };
+      },
+    });
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const holders = Array.from(
+      { length: PASSWORD_CHANGE_MAX_ADMITTED_PER_ADMIN },
+      () => attempts.runExclusive(adminId, async () => gate),
+    );
+
+    await assert.rejects(
+      () =>
+        service.changePassword(adminId, {
+          currentPassword: 'definitely-not-the-password',
+          newPassword,
+          confirmPassword: newPassword,
+        } as any),
+      (error: any) =>
+        error?.getStatus?.() === 429 &&
+        error?.message === PASSWORD_CHANGE_BUSY_MESSAGE,
+    );
+
+    assert.equal(findCalls, 0);
+    assert.equal(attempts.trackedCount, 0);
+    attempts.assertAllowed(adminId);
+
+    release();
+    await Promise.all(holders);
+    assert.equal(attempts.inflightCount(adminId), 0);
   });
 });
 

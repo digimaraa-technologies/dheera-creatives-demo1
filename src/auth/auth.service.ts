@@ -11,6 +11,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { SAFE_ADMIN_SELECT, SafeAdmin } from './auth.types';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { LoginDto } from './dto/login.dto';
+import { PasswordChangeAttemptsService } from './password-change-attempts.service';
 
 // Checked when the account does not exist, so both login paths cost one bcrypt
 // comparison and response time does not reveal whether a username is valid.
@@ -42,6 +43,7 @@ export class AuthService {
 
   constructor(
     private readonly prisma: PrismaService,
+    private readonly passwordChangeAttempts: PasswordChangeAttemptsService,
     config: ConfigService,
   ) {
     this.sessionTtlMs =
@@ -176,6 +178,14 @@ export class AuthService {
    * Changes the password for one admin and revokes every session they own,
    * including the caller's: the old session must not survive the change.
    *
+   * Account-level failed-current-password protection is enforced per admin ID
+   * from the validated session: the lockout is checked before bcrypt
+   * verification, and verification/recording runs serialized per admin so
+   * concurrent requests cannot bypass the threshold. Only an authenticated,
+   * CSRF-valid, DTO-valid request whose current-password verification is
+   * actually performed and fails increments the counter; DB errors and other
+   * failures do not. A successful change resets stale failure state.
+   *
    * The update is a compare-and-swap on the stored hash, so two concurrent
    * requests cannot both apply and an outdated verification can never
    * overwrite a newer password.
@@ -190,43 +200,51 @@ export class AuthService {
       );
     }
 
-    const admin = await this.prisma.admin.findUnique({
-      where: { id: adminId },
-      select: { passwordHash: true },
-    });
-    if (!admin) {
-      throw new UnauthorizedException('Authentication required');
-    }
+    await this.passwordChangeAttempts.runExclusive(adminId, async () => {
+      // Checked before bcrypt to avoid CPU work and to enforce lockout.
+      this.passwordChangeAttempts.assertAllowed(adminId);
 
-    // A valid session is not enough: the caller must prove the current
-    // password, so a stolen cookie cannot lock the owner out.
-    if (!(await compare(dto.currentPassword, admin.passwordHash))) {
-      throw new BadRequestException('Current password is incorrect');
-    }
-
-    // Compare through bcrypt, not strings: a value that only differs after
-    // byte 72 maps to the same credential.
-    if (await compare(dto.newPassword, admin.passwordHash)) {
-      throw new BadRequestException(
-        'New password must be different from the current password',
-      );
-    }
-
-    const passwordHash = await hash(dto.newPassword, 12);
-
-    await this.prisma.$transaction(async (tx) => {
-      const updated = await tx.admin.updateMany({
-        where: { id: adminId, passwordHash: admin.passwordHash },
-        data: { passwordHash },
+      const admin = await this.prisma.admin.findUnique({
+        where: { id: adminId },
+        select: { passwordHash: true },
       });
-      if (updated.count === 0) {
-        throw new ConflictException(
-          'Password was changed by another request. Please sign in again.',
+      if (!admin) {
+        throw new UnauthorizedException('Authentication required');
+      }
+
+      // A valid session is not enough: the caller must prove the current
+      // password, so a stolen cookie cannot lock the owner out.
+      if (!(await compare(dto.currentPassword, admin.passwordHash))) {
+        this.passwordChangeAttempts.recordFailure(adminId);
+        throw new BadRequestException('Current password is incorrect');
+      }
+
+      // Compare through bcrypt, not strings: a value that only differs after
+      // byte 72 maps to the same credential.
+      if (await compare(dto.newPassword, admin.passwordHash)) {
+        throw new BadRequestException(
+          'New password must be different from the current password',
         );
       }
 
-      // Only this admin's sessions; other administrators are untouched.
-      await tx.session.deleteMany({ where: { adminId } });
+      const passwordHash = await hash(dto.newPassword, 12);
+
+      await this.prisma.$transaction(async (tx) => {
+        const updated = await tx.admin.updateMany({
+          where: { id: adminId, passwordHash: admin.passwordHash },
+          data: { passwordHash },
+        });
+        if (updated.count === 0) {
+          throw new ConflictException(
+            'Password was changed by another request. Please sign in again.',
+          );
+        }
+
+        // Only this admin's sessions; other administrators are untouched.
+        await tx.session.deleteMany({ where: { adminId } });
+      });
+
+      this.passwordChangeAttempts.reset(adminId);
     });
   }
 }

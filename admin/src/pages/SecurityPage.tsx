@@ -1,6 +1,7 @@
 import { Eye, EyeOff } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { ApiError } from '../api/client';
 import { useAuth } from '../hooks/useAuth';
 import { useToast } from '../hooks/useToast';
 
@@ -128,9 +129,19 @@ export function SecurityPage() {
       notify('Password changed successfully. Please sign in again.', 'success');
       navigate('/login', { replace: true });
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : 'Could not change the password.',
-      );
+      if (err instanceof ApiError && err.status === 429) {
+        const lockoutMessage =
+          'Too many incorrect password attempts. Please try again after the temporary security lockout.';
+        setError(
+          err.message === lockoutMessage
+            ? lockoutMessage
+            : 'Too many password change requests. Please try again shortly.',
+        );
+      } else {
+        setError(
+          err instanceof Error ? err.message : 'Could not change the password.',
+        );
+      }
     } finally {
       setSaving(false);
     }

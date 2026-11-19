@@ -200,4 +200,83 @@ describe('security page', () => {
     expect(screen.getByRole('button', { name: 'Update Password' })).toBeEnabled();
     expect(screen.queryByText('Login screen')).not.toBeInTheDocument();
   });
+
+  it('shows a clear lockout message on HTTP 429 without sensitive details', async () => {
+    changePassword.mockRejectedValue(
+      new ApiError(
+        'Too many incorrect password attempts. Please try again after the temporary security lockout.',
+        429,
+        { message: 'Too many incorrect password attempts. Please try again after the temporary security lockout.' },
+      ),
+    );
+    const user = userEvent.setup();
+    renderSecurity();
+    await screen.findByRole('heading', { name: 'Security' });
+
+    await fillForm();
+    await user.click(screen.getByRole('button', { name: 'Update Password' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(
+      'Too many incorrect password attempts. Please try again after the temporary security lockout.',
+    );
+    expect(alert).not.toHaveTextContent('token');
+    expect(alert).not.toHaveTextContent('hash');
+    expect(alert).not.toHaveTextContent('passwordHash');
+    expect(alert).not.toHaveTextContent('cookie');
+    expect(alert).not.toHaveTextContent('secret');
+    expect(screen.getByRole('button', { name: 'Update Password' })).toBeEnabled();
+    expect(screen.queryByText('Login screen')).not.toBeInTheDocument();
+  });
+
+  it('keeps submit disabled during a pending 429 response and recovers', async () => {
+    let rejectChange: (reason?: unknown) => void = () => undefined;
+    changePassword.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectChange = reject;
+        }),
+    );
+    const user = userEvent.setup();
+    renderSecurity();
+    await screen.findByRole('heading', { name: 'Security' });
+
+    await fillForm();
+    await user.click(screen.getByRole('button', { name: 'Update Password' }));
+
+    expect(screen.getByRole('button', { name: 'Updating…' })).toBeDisabled();
+    expect(screen.getByLabelText('Current password')).toBeDisabled();
+
+    await act(async () => {
+      rejectChange(
+        new ApiError(
+          'Too many incorrect password attempts. Please try again after the temporary security lockout.',
+          429,
+        ),
+      );
+    });
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Too many incorrect password attempts. Please try again after the temporary security lockout.',
+    );
+    expect(screen.getByRole('button', { name: 'Update Password' })).toBeEnabled();
+    expect(screen.getByLabelText('Current password')).toBeEnabled();
+  });
+
+  it('shows a generic retry message for queue-saturation 429 responses', async () => {
+    changePassword.mockRejectedValue(
+      new ApiError('Too many password change requests. Please try again shortly.', 429),
+    );
+    const user = userEvent.setup();
+    renderSecurity();
+    await screen.findByRole('heading', { name: 'Security' });
+
+    await fillForm();
+    await user.click(screen.getByRole('button', { name: 'Update Password' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Too many password change requests. Please try again shortly.',
+    );
+    expect(screen.getByRole('button', { name: 'Update Password' })).toBeEnabled();
+  });
 });
