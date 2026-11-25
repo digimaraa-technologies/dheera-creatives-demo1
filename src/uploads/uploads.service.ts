@@ -1,12 +1,13 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readdir, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import {
   UPLOAD_IMAGE_FILENAME,
   parseLocalImageUrl,
   type UploadFolder,
 } from '../common/image-url';
+import { uploadDir } from '../common/runtime-paths';
 import { PrismaService } from '../prisma/prisma.service';
 import { assertAllowedImage } from './validators/image-file.validator';
 
@@ -36,10 +37,19 @@ export class UploadsService {
   // Read at call time: ConfigModule runs when the module is imported, while
   // tests point UPLOAD_DIR at a temp directory afterwards.
   get rootDir(): string {
-    return resolve(process.env.UPLOAD_DIR ?? 'uploads');
+    return uploadDir(__dirname);
   }
 
   async save(folder: UploadFolder, file: Express.Multer.File | undefined): Promise<StoredImage> {
+    // Hostinger managed Web Apps do not provide verified persistent storage for
+    // app-directory uploads. Refuse to report success in production until durable
+    // image storage is explicitly configured.
+    if (process.env.NODE_ENV === 'production') {
+      throw new ServiceUnavailableException(
+        'Durable image storage is not configured. Production image uploads are unavailable until persistent storage is set up.',
+      );
+    }
+
     const extension = assertAllowedImage(file);
     // UUID name only: the original filename never touches the filesystem.
     const imageFilename = `${randomUUID()}.${extension}`;

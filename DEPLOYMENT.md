@@ -1,518 +1,227 @@
-# Production Deployment Guide
+# Deployment Guide — Hostinger Managed Web Apps (MariaDB)
 
-Approved architecture:
+Target environment (confirmed):
+- **Hosting:** Hostinger Cloud Startup — managed Web Apps (not VPS)
+- **Runtime:** Node.js 20 detected by Hostinger; exact patch version must be checked at runtime (see §1)
+- **Build command:** `npm run build`
+- **Output directory:** `dist` — Hostinger deploys this directory as the application root
+- **Start entry:** `main.js` from the deployed `dist` root (locally: `npm start` → `node dist/main.js`)
+- **Port / bind:** app reads `PORT` at runtime and binds `0.0.0.0` via `BIND_HOST`
+- **Database (Hostinger production):** MariaDB `11.8.9-MariaDB-log` reached internally at `127.0.0.1:3306`; credentials supplied through hPanel; no external SSL required
+- **Database (local development/tests):** MariaDB 11.8.10 at `127.0.0.1:3306`, database `dheera_test`
+- **Domain:** temporary Hostinger domain is currently assigned; `https://dheera.digimaraa.in/` will be connected separately
+- **Repository:** `digimaraa-technologies/dheera-creatives-demo1`
 
-| Surface | URL |
-|---|---|
-| Public website | `https://dheera.digimaraa.in/` |
-| Admin dashboard | `https://dheera.digimaraa.in/admin` |
-| Backend API | `https://dheera.digimaraa.in/api` |
-| Uploaded images | `https://dheera.digimaraa.in/uploads/` |
+Application routes (served by the NestJS app when assets are present):
+- `/` — public website (`public/`)
+- `/admin` — React admin dashboard (`admin/dist/`)
+- `/api` — NestJS API
+- `/uploads` — read-only static image serving; production uploads are disabled
 
-One origin, one NestJS process, one nginx TLS terminator. Keeping the admin and
-the API on the same origin keeps session cookies first-party and avoids
-cross-site CSRF complications.
+> **Status:** this repository prepares the application; it does not perform deployment, DNS/TLS configuration, Hostinger panel setup, or database provisioning. Commands that change a server/database are operator actions to run only against verified targets with explicit approval.
 
-> **Status:** these files prepare the deployment; they do not configure a real
-> server. DNS, the host, nginx, the TLS certificate, firewall rules and backups
-> are **not** installed or verified by this repository. Treat every command
-> marked ⚠️ or ⛔ below as an operator action to run against a verified target.
+## 1. Prerequisites and confirmed assumptions
 
-## 1. Prerequisites
+- Hostinger Web App service with Node.js **20.x** detected. Minimum for this build: **Node 20.19.0** in the Node 20 branch (or **22.12.0+**), because Vite 8 requires `^20.19.0 || >=22.12.0`. Root `package.json` now declares the same range; generic Node 20 is not sufficient. Hostinger's exact patch version must be checked at runtime before claiming compatibility. Do not downgrade dependencies.
+- Hostinger installs dependencies during the build using `npm ci` because `package-lock.json` exists. Root `dependencies` are available at runtime; devDependencies are needed during the build for `nest build`, `prisma generate`, and Prisma CLI migrations. Do not assume the automatic install includes them. If hPanel exposes a configurable install command, set `npm ci --include=dev`; otherwise confirm the platform install is not run with `--omit=dev` or with `NODE_ENV=production` suppressing devDependencies.
+- Hostinger MariaDB `11.8.9-MariaDB-log` database is reachable from the Web App at `127.0.0.1:3306`; credentials are provided through hPanel and remain private. No external SSL is required for this internal connection.
+- Environment variables are set in hPanel; `DATABASE_URL`, admin provisioning credentials, and other secrets are never committed.
+- Deployment directories are **not persistent** and there is no persistent application filesystem for uploads (see §6).
+- The temporary Hostinger domain is assigned for initial validation; the custom domain is connected separately.
 
-- Ubuntu 24.04 LTS (or a comparable Linux distribution) with `systemd`.
-- Node.js **20.11 or newer** (tested with Node 24) and npm.
-- PostgreSQL **15 or newer**, reachable from the app host.
-- nginx **1.24 or newer**.
-- Certbot (or another ACME client) for HTTPS.
-- A DNS `A`/`AAAA` record for `dheera.digimaraa.in` pointing at the server.
-- A dedicated non-root Linux user, for example `dheera`.
-- Outbound HTTPS access for npm and Let's Encrypt.
+**Still requires hPanel confirmation:**
+- Exact Node.js 20 patch version at runtime.
+- Whether devDependencies are installed during Hostinger's `npm ci` build (`prisma` and `@nestjs/cli` are devDependencies).
+- Exact `PORT` value; Hostinger supports binding to `0.0.0.0`.
+- Reverse-proxy hop count is not available. Use `TRUST_PROXY=false` (disabled) unless a verified count is supplied; never `true` or a guessed number.
+- Database charset/collation defaults, connection limits, and whether the hPanel-provided `DATABASE_URL` needs URL options.
+- Runtime `node_modules/` availability in the deployed artifact; repository root is the deployment root and output is `dist`.
 
-Check versions before building:
+## 2. Database (local MariaDB vs Hostinger MariaDB) and Prisma
 
-```bash
-node -v
-npm -v
-psql --version
-nginx -v
-```
+- Prisma datasource provider: **`mysql`** for both environments. Prisma version: **6.19.x**; it supports local MariaDB 11.8.10 and Hostinger MariaDB 11.8.9 through the MySQL provider.
+- **Local development/tests:** MariaDB 11.8.10, `mysql://USER:PASSWORD@127.0.0.1:3306/dheera_test`. This is the database used for the verified migrations and the 204-test suite.
+- **Hostinger production:** MariaDB `11.8.9-MariaDB-log` at internal `127.0.0.1:3306`, represented as `mysql://DB_USER:DB_PASSWORD@127.0.0.1:3306/DB_NAME`. Use the exact user/password/database supplied by hPanel; URL-encode any reserved characters in credentials. No external SSL is required for this internal connection — do not add SSL options unless hPanel provides them.
+- Fresh `mysql`-provider migration history is included on the `mysql` branch (`prisma/migrations/`, `migration_lock.toml` provider `mysql`). PostgreSQL migration history is not part of the active migration set.
+- The production database is expected to be **empty**. No data migration from PostgreSQL or from the local test database is performed.
 
-## 2. Release layout
+### Migration / initialization procedure (operator, approved target only)
 
-Use releases plus a `current` symlink so rollback is a symlink switch:
-
-```text
-/opt/dheera-creatives/
-├── releases/2026-11-17/
-├── current -> releases/2026-11-17
-└── ...
-/etc/dheera-creatives/app.env          # production environment, mode 0600
-/var/lib/dheera/uploads/               # persistent uploads
-/var/backups/dheera/                   # database + upload snapshots
-```
-
-`current/` must contain `dist/`, `public/`, `admin/dist/`, `prisma/`,
-`package.json` and `node_modules/`. The server resolves `public/` relative to
-`dist/`, so running `node dist/main.js` from `current/` is enough.
-
-## 3. Environment checklist
-
-Create `/etc/dheera-creatives/app.env` (never commit it; mode `0600`, owned by
-the service user). Safe examples only — replace every placeholder on the
-server and keep the real values out of tickets, chat and Git.
-
-| Variable | Required | Safe example | Purpose |
-|---|---|---|---|
-| `NODE_ENV` | yes | `production` | Enables Secure cookies, HSTS and production validation |
-| `PORT` | no | `3000` | NestJS listen port behind nginx |
-| `BIND_HOST` | **production** | `127.0.0.1` | Interface to bind; keep it off the public network |
-| `TRUST_PROXY` | **production** | `1` | Proxy hops Express trusts for real client IPs |
-| `DATABASE_URL` | yes | `postgresql://dheera_app:<password>@127.0.0.1:5432/dheera_creatives_db?schema=public` | Prisma/PostgreSQL connection |
-| `ADMIN_FRONTEND_ORIGIN` | yes | `https://dheera.digimaraa.in` | CORS and login `Origin` allowlist; HTTPS required |
-| `SESSION_TTL_HOURS` | no | `8` | Absolute admin session lifetime (1–720) |
-| `SESSION_IDLE_TTL_MINUTES` | no | `30` | Idle sign-out (1–720) |
-| `UPLOAD_DIR` | no | `/var/lib/dheera/uploads` | Persistent image directory |
-| `ADMIN_USERNAME` | seed only | `admin` | Used by `npm run db:seed`, not at runtime |
-| `ADMIN_EMAIL` | seed only | `admin@example.com` | Used by `npm run db:seed`, not at runtime |
-| `ADMIN_PASSWORD` | seed only | `<12+ chars, <=72 UTF-8 bytes>` | Never commit; never print |
-| `VITE_API_BASE_URL` | no | *(empty)* | Leave empty for the same-origin admin build |
-
-Production startup refuses to run when:
-
-- `DATABASE_URL` is missing or is not a `postgresql://` / `postgres://` URL.
-- `TRUST_PROXY` is unset, or is `true` (only a hop count `0–10` is allowed).
-- `BIND_HOST` is unset or contains unsafe characters.
-- `ADMIN_FRONTEND_ORIGIN` is empty or contains a non-`https://` origin.
-- `PORT` or a session setting is outside its allowed range.
-
-These checks live in `src/config/env.validation.ts` and are covered by tests.
-Set `TRUST_PROXY=2` only when both Cloudflare (or another CDN) **and** nginx are
-in front; otherwise keep `1`. Never use `TRUST_PROXY=true`: clients could spoof
-`X-Forwarded-For` and bypass rate limits.
-
-### Database URL notes
-
-- Use a dedicated, non-superuser role.
-- Keep PostgreSQL on loopback or a private interface.
-- For a remote database add `sslmode=require`; prefer
-  `sslmode=verify-full` with the provider CA when available.
-- The password must be URL-safe or percent-encoded.
-
-## 4. Build
-
-✅ Safe to run in the release directory; writes only build output.
-
-```bash
-# Extract or clone the release, then:
-npm ci
-npm run build
-
-cd admin
-npm ci
-npm run build
-cd ..
-```
-
-Do not build with the Vite dev server in production. `admin/dist` is generated
-by `vite build` and served by NestJS at `/admin`; production never needs
-`npm run dev`.
-
-Verify the build artefacts exist:
-
-```bash
-test -f dist/main.js
-test -f admin/dist/index.html
-test -f public/index.html
-```
-
-## 5. PostgreSQL readiness
-
-### Host and port
-
-- Same host: `127.0.0.1:5432`.
-- Separate host: the database's **private** address and port, allowed only from
-  the app host.
-- Never expose `5432` to `0.0.0.0/0` or the public internet.
-
-### Application role
-
-The app role needs to connect and read/write catalogue data. Prisma
-`migrate deploy` also needs `CREATE` on the application schema (or ownership of
-the schema/tables). A single dedicated role that owns the app schema is the
-simplest safe setup:
-
-```sql
--- Template only. Run as a PostgreSQL administrator after verifying names.
-CREATE ROLE dheera_app LOGIN PASSWORD '<strong-password>';
-CREATE DATABASE dheera_creatives_db OWNER dheera_app;
-REVOKE ALL ON DATABASE dheera_creatives_db FROM PUBLIC;
-REVOKE ALL ON SCHEMA public FROM PUBLIC;
-GRANT CONNECT ON DATABASE dheera_creatives_db TO dheera_app;
-GRANT USAGE, CREATE ON SCHEMA public TO dheera_app;
-```
-
-For an existing database, prefer granting the minimum additional privileges
-over changing ownership blindly. Do not make the role a superuser and do not
-grant `CREATEDB`/`CREATEROLE`.
-
-### Connection security
-
-- `postgresql.conf`: `listen_addresses = 'localhost'` (or the private address),
-  `ssl = on` for remote connections.
-- `pg_hba.conf`: `scram-sha-256` for the app role; no `trust` for network
-  connections.
-- Firewall: allow `5432` only from the app host.
-- Verify with `pg_isready -h <host> -p 5432 -d dheera_creatives_db`.
-
-### Migrations
-
-Migrations are **forward-only**. Never run `prisma migrate reset`,
-`prisma db push --force-reset`, `DROP DATABASE` or `TRUNCATE` against a database
-with real data.
-
-✅ Read-only status check:
+Run in the deployed application environment (or a verified operator environment) with production `DATABASE_URL` configured. **Do not run against the Hostinger database from this development phase.**
 
 ```bash
 npx prisma validate
+npx prisma generate
+npx prisma migrate deploy
 npx prisma migrate status
 ```
 
-⚠️ Take a backup first, then apply pending migrations:
+- `prisma migrate deploy` applies committed migrations to an empty (or compatible) database.
+- `prisma migrate status` must report the schema up to date.
+- `prisma` is a devDependency. Run these commands from a verified operator environment where the CLI and `prisma/migrations/` are available (for example, the repository checkout with devDependencies installed). The running application does not load migrations at startup, so the copied `dist/prisma/` files are not required for normal request handling.
+- **Never run:** `prisma migrate dev`, `prisma migrate reset`, `prisma db push --force-reset`, or any destructive operation.
+
+### Initial admin provisioning
+
+After migrations, create/reset the initial admin using environment-provided values only (never print or commit secrets):
 
 ```bash
-npm run db:migrate       # prisma migrate deploy
-npx prisma generate      # usually already run by postinstall
-npx prisma migrate status
+# requires ADMIN_USERNAME, ADMIN_EMAIL, ADMIN_PASSWORD in the environment
+npm run db:seed
+# or, for controlled refresh of an existing/matching admin record per script rules:
+npm run db:reset-admin
 ```
 
-Restart the app only after the migration reports success.
+- Password must meet existing policy (minimum length and bcrypt byte limit enforced by scripts).
+- Scripts refuse unsafe overwrites/merges as implemented; review output.
 
-## 6. Database backup and restore
+### Collation and comparison behavior (MariaDB)
 
-### Backup
+- **Database/table default:** `utf8mb4` with `utf8mb4_unicode_ci` (case-insensitive) for application tables, to support Unicode text and intended case-insensitive behavior.
+- **Usernames:** case-insensitive uniqueness (`admins.username`, unique index, case-insensitive collation).
+- **Emails:** case-insensitive uniqueness (`admins.email`, unique index, case-insensitive collation).
+- **Product slugs:** case-insensitive uniqueness (`products.slug`, unique index, case-insensitive collation).
+- **Service slugs:** case-insensitive uniqueness (`services.slug`, unique index, case-insensitive collation).
+- **Product/service name search:** case-insensitive (string comparisons/collation-driven; Prisma queries do not rely on PostgreSQL `mode: 'insensitive'`).
+- **Session token hashes (`sessions.tokenHash`, unique) and CSRF hashes (`sessions.csrfHash`):** stored as SHA-256 hex digests and compared/looked up by exact hash value. These columns use explicit **binary/case-sensitive collation** (`utf8mb4_bin`) to preserve exact-value comparison and token identity semantics (no silent case-folding of hash values). Non-hash session fields remain under the table default collation.
+- **`DATABASE_URL` scheme:** Prisma 6.19.x with the MySQL provider requires `mysql://` connection strings; application validation accepts `mysql://` only. For Hostinger use the internal `127.0.0.1:3306` connection supplied by hPanel; external SSL is not required. Never include or log real credentials.
 
-✅ Safe and non-destructive. Run as the service user with the environment
-loaded from the protected env file:
+## 3. Required environment variables
 
-```bash
-set -a
-. /etc/dheera-creatives/app.env
-set +a
+Set in Hostinger (names only; no real values shown). Production validation is strict.
 
-install -d -m 0750 /var/backups/dheera
-pg_dump --format=custom --no-owner \
-  --file="/var/backups/dheera/db-$(date +%F-%H%M).dump" \
-  "$DATABASE_URL"
-```
+Variable categories:
 
-Verify the dump immediately (do not skip this):
+- **Operator-set application variables:** `NODE_ENV`, `BIND_HOST`, `DATABASE_URL`, `TRUST_PROXY`, `ADMIN_FRONTEND_ORIGIN`.
+- **Hostinger-injected:** `PORT`.
+- **Optional application/build variables:** `UPLOAD_DIR`, `SESSION_TTL_HOURS`, `SESSION_IDLE_TTL_MINUTES`, `VITE_API_BASE_URL`.
+- **Provisioning-only; leave unset until migration and admin provisioning are explicitly approved:** `ADMIN_USERNAME`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`. Never leave a password in the deployment environment after provisioning.
 
-```bash
-pg_restore --list /var/backups/dheera/db-YYYY-MM-DD-HHMM.dump >/dev/null
-```
-
-A backup is not proven until a restore has been tested.
-
-### Restore verification
-
-⛔ Restores are destructive to the target database. Never restore over live
-production on the first attempt. Restore into a **new scratch database**, check
-counts, then promote only with explicit approval.
-
-```bash
-createdb -h 127.0.0.1 -U postgres dheera_restore_check
-pg_restore --dbname=dheera_restore_check --no-owner \
-  /var/backups/dheera/db-YYYY-MM-DD-HHMM.dump
-
-psql -h 127.0.0.1 -U postgres -d dheera_restore_check \
-  -c 'SELECT (SELECT count(*) FROM products) AS products,
-             (SELECT count(*) FROM services) AS services,
-             (SELECT count(*) FROM admins) AS admins;'
-
-dropdb -h 127.0.0.1 -U postgres dheera_restore_check
-```
-
-Also run `npx prisma migrate status` against the restored database before
-considering the backup valid.
-
-### Retention
-
-Keep at least daily backups for 14 days, weekly for 8 weeks, and one monthly
-off-site copy. Encrypt off-site copies and restrict access. Monitor backup age;
-a stale backup should alert.
-
-## 7. Persistent uploads
-
-Uploaded images live on the filesystem, never in PostgreSQL.
-
-```bash
-sudo install -d -o dheera -g dheera -m 0750 /var/lib/dheera/uploads
-sudo install -d -o dheera -g dheera -m 0750 /var/lib/dheera/uploads/products
-sudo install -d -o dheera -g dheera -m 0750 /var/lib/dheera/uploads/services
-```
-
-Set `UPLOAD_DIR=/var/lib/dheera/uploads`.
-
-- The Node user needs `rwx` on the upload root and subdirectories and `rw` on
-  files. `0750` directories and `0640` files are a safe default.
-- If the directory is missing, the app creates it recursively at startup.
-- If the parent is unwritable, startup fails when the directory is created; if
-  the directory exists but writes fail later, uploads return a server error.
-- Existing images are served at `/uploads/...` by NestJS with a 7-day immutable
-  cache, `X-Content-Type-Options: nosniff` and a restrictive CSP. Do not expose
-  a directory listing.
-- `uploads/` is git-ignored; it must be part of server backups.
-
-### Uploads backup
-
-✅ Safe:
-
-```bash
-tar --create --gzip \
-  --file="/var/backups/dheera/uploads-$(date +%F).tar.gz" \
-  -C /var/lib/dheera uploads
-
-tar --list --file="/var/backups/dheera/uploads-YYYY-MM-DD.tar.gz" >/dev/null
-sha256sum /var/backups/dheera/uploads-YYYY-MM-DD.tar.gz
-```
-
-Back up the database and uploads as one logical pair. To verify a restore,
-extract to a scratch directory and compare file hashes; never delete or move the
-live uploads to test a backup.
-
-## 8. Application process manager
-
-Use **systemd**, not PM2, on a standard Linux host. It supervises the process,
-restarts on failure, captures stdout/stderr in journald and enables hardening.
-The template is `deploy/systemd/dheera-creatives.service`.
-
-⚠️ Install it on the server:
-
-```bash
-sudo cp deploy/systemd/dheera-creatives.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now dheera-creatives
-sudo systemctl status dheera-creatives
-```
-
-The unit expects:
-
-- code at `/opt/dheera-creatives/current`
-- env file at `/etc/dheera-creatives/app.env`
-- uploads at `/var/lib/dheera/uploads`
-- Node at `/usr/bin/node`
-
-Adjust `User`, `Group`, `ExecStart`, `WorkingDirectory` and `ReadWritePaths` if
-the server layout differs. Changes to the unit require `daemon-reload` and a
-restart.
-
-Restart behaviour: `Restart=on-failure`, `RestartSec=5s`, with a start limit of
-5 failures per 60 seconds to avoid restart loops.
-
-## 9. Nginx and HTTPS
-
-Files:
-
-- `deploy/nginx/dheera.digimaraa.in.conf`
-- `deploy/nginx/dheera-proxy.conf`
-
-Status: **not installed or enabled by this repository.**
-
-⚠️ Install after DNS points at the server:
-
-```bash
-sudo apt update && sudo apt install -y nginx certbot python3-certbot-nginx
-
-sudo mkdir -p /var/www/certbot
-sudo cp deploy/nginx/dheera.digimaraa.in.conf \
-        /etc/nginx/sites-available/dheera.digimaraa.in.conf
-sudo cp deploy/nginx/dheera-proxy.conf /etc/nginx/snippets/
-sudo ln -s /etc/nginx/sites-available/dheera.digimaraa.in.conf \
-           /etc/nginx/sites-enabled/dheera.digimaraa.in.conf
-
-sudo nginx -t
-sudo systemctl reload nginx
-```
-
-Obtain the certificate (this edits nginx or uses HTTP-01; review the diff):
-
-```bash
-sudo certbot --nginx -d dheera.digimaraa.in
-sudo certbot renew --dry-run
-```
-
-The config expects Let's Encrypt paths under
-`/etc/letsencrypt/live/dheera.digimaraa.in/`. If the certificate lives
-elsewhere, update `ssl_certificate`, `ssl_certificate_key` and
-`ssl_trusted_certificate` accordingly.
-
-What the config does:
-
-- Redirects HTTP to HTTPS, while keeping `/.well-known/acme-challenge/` on HTTP.
-- Enables TLS 1.2/1.3, session caching, OCSP stapling and `server_tokens off`.
-- Sets `client_max_body_size 6m` (5 MB upload plus multipart overhead).
-- Proxies `/api/`, `/uploads/`, `/admin/` and `/` to `127.0.0.1:3000`.
-- Redirects `/admin` to `/admin/`.
-- Sends `Host`, `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto`,
-  `X-Forwarded-Host` and `X-Forwarded-Port`.
-- Does **not** add WebSocket/Upgrade headers because the app has no WebSockets.
-- Does **not** duplicate HSTS/CSP; NestJS sends them in production.
-
-`TRUST_PROXY=1` must match the single nginx hop. If another proxy is added in
-front, increase the hop count and make sure that proxy also sets
-`X-Forwarded-For`.
-
-## 10. Firewall, SSH and database exposure
-
-Only nginx accepts public traffic.
-
-| Port | Exposure | Notes |
+| Variable | Required | Notes |
 |---|---|---|
-| 22 | restricted | SSH; ideally allow only admin IPs |
-| 80, 443 | public | nginx; 80 redirects to 443 |
-| 3000 | loopback/private | NestJS; `BIND_HOST=127.0.0.1` on one host |
-| 5432 | private | PostgreSQL; never public |
+| `NODE_ENV` | **Yes** | `production` in deployed environments (enables secure cookie/HSTS behavior and production checks). |
+| `DATABASE_URL` | **Yes** | MariaDB/MySQL connection string for Prisma. Must use the `mysql://` scheme (Prisma 6.19.x MySQL provider; `mariadb://` not accepted). For Hostinger use the internal `127.0.0.1:3306` credentials/database from hPanel; no external SSL is required. Secret. |
+| `PORT` | **Yes (runtime)** | Injected by Hostinger Web Apps; app listens on `Number(PORT) || 3000`. Do not hardcode a production port. |
+| `BIND_HOST` | **Yes (production)** | Set to `0.0.0.0` as required by Hostinger. Must be explicit; the app warns on wildcard binds and production validation requires the variable to be present. |
+| `TRUST_PROXY` | **Yes (production)** | Use `false` to trust no proxy headers. A numeric hop count `0–10` is valid only after hPanel verifies it; never `true` and never guess. Secure cookies/HSTS do not depend on proxy trust; only rate-limit client-IP accuracy does. |
+| `ADMIN_FRONTEND_ORIGIN` | **Yes (production)** | Comma-separated, host-exact allowlist for credentialed API/CORS and login `Origin`. Must be `https://...`. Use the currently assigned temporary HTTPS origin for initial validation; switch to `https://dheera.digimaraa.in` when the custom domain is connected. |
+| `UPLOAD_DIR` | Optional (default `uploads`) | Read-only static serving root. Hostinger confirms no persistent application filesystem, so contents are **not durable**; production uploads stay disabled (see §6). |
+| `SESSION_TTL_HOURS` | Optional (default `8`, 1–720) | Absolute admin session lifetime. |
+| `SESSION_IDLE_TTL_MINUTES` | Optional (default `30`, 1–720) | Idle session timeout. |
+| `ADMIN_USERNAME` | Seed/reset only | Initial admin username (provisioning commands). |
+| `ADMIN_EMAIL` | Seed/reset only | Initial admin email. |
+| `ADMIN_PASSWORD` | Seed/reset only | Initial admin password (secret). |
+| `VITE_API_BASE_URL` | Conditional (admin build-time) | Leave empty for same-origin deployment; set only if the admin must call a different API origin at build time. |
 
-⚠️ Example UFW rules (verify before enabling; do not lock yourself out):
+**Production startup requirements (enforced):** explicit `TRUST_PROXY` (`false` or a verified hop count), explicit `BIND_HOST`, and `https://` `ADMIN_FRONTEND_ORIGIN`. Do not weaken authentication, origin, cookie, CSRF, or rate-limit protections.
 
-```bash
-sudo ufw default deny incoming
-sudo ufw allow OpenSSH
-sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp
-sudo ufw enable
-sudo ufw status verbose
+## 4. Build and start (Hostinger Web Apps)
+
+### Root scripts (package.json)
+
+- `npm run build` — `prisma generate` → `nest build` → `npm --prefix admin ci` + Vite build → `node scripts/copy-build-assets.js`. Produces a self-contained `dist/` and regenerates Prisma Client.
+- `npm run build:server` — NestJS backend only (cleans then compiles into `dist/`).
+- `npm run build:admin` — reproducible admin install + Vite production build (base `/admin/`).
+- `npm start` — local alias for `npm run start:prod` → `node dist/main.js`.
+- `npm run start:prod` — local compiled-entry launcher.
+- `postinstall` — `prisma generate` during `npm ci`; the build also generates explicitly.
+
+### Hostinger commands and layout (confirmed)
+
+- **Dependency install:** Hostinger runs `npm ci` using `package-lock.json`. `@prisma/client` is a runtime dependency; `prisma` remains a devDependency and is available during the build/migration environment. Do not move `prisma` into runtime dependencies without a proven need.
+- **Build command:** `npm run build`, run from the repository root. It explicitly runs `prisma generate` before the NestJS build, so the generated client and native query engine match the deployed schema.
+- **Output directory:** `dist`. Hostinger deploys this directory as the runtime root.
+- **Start entry:** `main.js` from the deployed `dist` root. No repository-root files outside `dist` are required by the running app.
+- **Runtime dependencies:** root `dependencies` are available at runtime; `node_modules/` is not copied into `dist/`.
+
+For local/CI reproducibility: `npm ci && npm run build`, then `npm start`.
+
+### Hostinger panel settings to enter
+
+| Setting | Value |
+|---|---|
+| Repository root / deployment root | Repository root (confirmed) |
+| Node.js version | Any version satisfying `^20.19.0 \|\| >=22.12.0`; on the Node 20 branch this means **20.19.0 or newer**. Verify with `node --version` at runtime. |
+| Install command | `npm ci --include=dev` if configurable. If not configurable, confirm the automatic `npm ci` does not omit devDependencies. |
+| Build command | `npm run build` |
+| Output directory | `dist` |
+| Start entry / command | `main.js` from the deployed `dist` root (`node main.js`) |
+| Port | Use the Hostinger-injected `PORT`; do not hardcode a production port. |
+| Bind address | `0.0.0.0` via `BIND_HOST` (recommended by Hostinger) |
+
+Do not set `TRUST_PROXY=true` or a guessed hop count. Start with `TRUST_PROXY=false`.
+
+## 4A. Custom domain and SSL (operator)
+
+- Keep the currently assigned temporary HTTPS Hostinger domain for first validation.
+- Enable/verify TLS for `dheera.digimaraa.in` in hPanel before pointing `ADMIN_FRONTEND_ORIGIN` at it.
+- After DNS and TLS for the custom domain are confirmed, set `ADMIN_FRONTEND_ORIGIN=https://dheera.digimaraa.in` (or the exact HTTPS origin Hostinger serves) and restart the app.
+- Repeat the §8 verification checklist after the domain switch. Do not change DNS or TLS in this preparation phase.
+
+## 5. Deployment packaging
+
+Hostinger deploys only `dist`, so the build places every file the server reads inside it. After `npm run build` the required structure is:
+
+```text
+dist/
+  main.js
+  public/index.html
+  public/**                 # public website, CSS/JS/images/config
+  admin/dist/index.html
+  admin/dist/**             # built React admin + hashed assets
+  prisma/schema.prisma
+  prisma/migrations/**      # includes migration_lock.toml
+  ...compiled NestJS JS...  # auth/, common/, products/, services/, uploads/, etc.
 ```
 
-Verify rather than assume:
+Path resolution is layout-aware:
 
-```bash
-ss -ltnp | grep -E '3000|5432'
-```
+- `public/` and `admin/dist/` are located by searching the runtime working directory and the compiled entry directory. This works both locally (`<repo>/dist/main.js`) and on Hostinger (`<deployed>/main.js`).
+- Admin deep links still fall back to `index.html`; missing asset paths (with extensions) still return 404, not SPA HTML.
+- A relative `UPLOAD_DIR` is resolved under that same asset root; an absolute path is used as-is. Uploads stay read-only in production (§6).
+- Prisma schema/migrations are copied into `dist/prisma/` for operator/audit use. The running app does not read them; migrations are run separately (§2).
 
-Port 3000 should show `127.0.0.1:3000` (or a private address), and a connection
-to it from another machine must fail. Check the provider firewall too.
+Root dependencies are available at runtime; `node_modules/` is not copied into `dist/`. Bind address remains `0.0.0.0` via `BIND_HOST`.
 
-SSH recommendations: key-based auth only, `PasswordAuthentication no`,
-`PermitRootLogin no`, a non-root sudo user, and optionally `fail2ban`. Keep
-provider-console access as a recovery path.
+## 6. Image uploads and storage limitation (important)
 
-## 11. Logs, health and monitoring
+- **Local development:** existing local upload behavior is preserved (uploads stored under `UPLOAD_DIR`, default `uploads/`, served at `/uploads/...` with validation and safe headers).
+- **Hostinger managed Web Apps (confirmed):** deployment directories are not persistent and there is no persistent application filesystem for uploads. **Local app-directory uploads are not durable and must remain disabled.** `serveUploads()` creates the configured directory at startup for read-only static serving (absolute `UPLOAD_DIR`, or one resolved under the asset root); confirm the path is writable so startup does not fail, but do not rely on its contents surviving a redeploy.
+- **Production guard:** when `NODE_ENV=production`, upload endpoints **do not save files** and return a clear, non-sensitive error indicating durable image storage is not configured (uploads unavailable until persistent storage is set up). This prevents false-success uploads to unverified/non-persistent storage.
+- **Existing data/URLs:** existing image files and database references must not be deleted by this conversion; image retrieval/public URL behavior remains supported for environments where files are present.
+- **Product/service CRUD:** remains available; image upload availability depends on configured durable storage.
 
-### Health check
+**Future requirement (not implemented):** production image uploads require a later S3-compatible storage integration or another confirmed durable storage solution. Do not implement external/third-party storage without approval. If Hostinger provides a confirmed persistent writable mount, configure and verify it (path, permissions, backups, persistence across deploys) before relying on uploads.
 
-`GET /api/health` returns `{ "status": "ok" }` with `Cache-Control: no-store`,
-no authentication and the normal public rate limit. It is a **liveness** probe
-and does not query PostgreSQL; a database outage must not make systemd restart a
-healthy process. Use `pg_isready` or a separate readiness check for the database.
+## 7. Security preservation
 
-### Logs
+The deployment must preserve existing protections:
+- Admin authentication and session handling (hashed session tokens, HttpOnly cookies, CSRF protection, origin validation)
+- Password hashing and password-change flow (transactional update, session revocation, lockout and bounded admission)
+- Login/API rate limiting and admin authorization
+- Security headers and CORS restrictions
+- Upload validation (MIME/magic-byte, size limits, UUID filenames), safe static serving, and DTO validation/sanitization
+- Existing error handling
 
-- The app logs to stdout/stderr; systemd sends them to journald.
-- `journalctl -u dheera-creatives -f`
-- `journalctl -u dheera-creatives --since '1 hour ago'`
-- Cap journald usage in `/etc/systemd/journald.conf` (`SystemMaxUse=1G`,
-  `MaxRetentionSec=30day`) and restart journald.
-- nginx access/error logs use the distribution's logrotate configuration.
-- Do not log cookies, tokens, passwords, request bodies or `DATABASE_URL`.
-  NestJS does not log them by default; keep it that way.
+**MariaDB 11.8.9-specific checks:** confirm server charset/collation defaults and that they honor the documented comparison behavior (case-insensitive username/email/slug uniqueness and name search; exact/binary comparison for session token/CSRF hash columns), CHECK constraint enforcement, `DECIMAL(10,2)`/`DATETIME(3)` handling, internal connection settings, and real-client-IP behavior with `TRUST_PROXY=false`. Only set a numeric hop count after hPanel provides a verified value.
 
-If PM2 is mandated instead of systemd, add `pm2-logrotate` and remember that
-`pm2 save`/`pm2 startup` are additional operator steps. systemd remains the
-recommended choice.
+## 8. Verification checklist (post-deploy, operator)
 
-### Monitoring and alerting
+- Validate the built `dist` artifact from its own root (simulate Hostinger) before upload.
+- Confirm runtime `node --version` satisfies `^20.19.0 || >=22.12.0` before running the build.
+- With `TRUST_PROXY=false`, verify rate-limit/client-IP behavior is acceptable from two distinct external clients; obtain a verified hop count before changing it.
+- `GET /api/health` responds OK.
+- Validate first on the assigned temporary HTTPS Hostinger domain, then repeat after `https://dheera.digimaraa.in` is connected and `ADMIN_FRONTEND_ORIGIN` is updated.
+- `/` serves public site and assets; `/admin` SPA loads (including deep-link refresh).
+- Admin login/logout/session behavior works over HTTPS with secure cookies and CSRF protections.
+- Product/service read and CRUD (as authorized) function correctly against the Hostinger MariaDB 11.8.9 database through the Prisma `mysql` provider.
+- Existing images (if present on persistent storage) load from `/uploads/...`.
+- Production upload attempts fail safely with the documented storage-not-configured error when durable storage is not configured.
+- `prisma migrate status` reports up to date on the target database.
+- Logs contain no secrets/credentials.
 
-Alert on:
+## 9. Command safety
 
-- `/api/health` non-200 or timeout (external uptime checker).
-- TLS certificate expiry (30/14/7 days).
-- Disk space and inode usage on the upload and database volumes.
-- PostgreSQL availability, connection count and slow queries.
-- Application 5xx rate and unusual 429 volume.
-- Backup age and verification failures.
-- systemd restart loops (`systemctl status`, journal errors).
-
-## 12. Rollback
-
-### Code rollback
-
-✅ Keep the previous release directory. ⚠️ Switching releases restarts the app:
-
-```bash
-sudo ln -sfn /opt/dheera-creatives/releases/<previous> \
-             /opt/dheera-creatives/current
-sudo systemctl restart dheera-creatives
-sudo systemctl status dheera-creatives
-```
-
-### Database rollback
-
-Migrations are forward-only. Rolling back code does not roll back the schema.
-If a migration must be undone, restore the verified backup into a new database,
-validate it, and switch the app only with explicit approval. Restoring over live
-data loses every write made after the backup — treat it as a last resort.
-
-### Uploads rollback
-
-Restore only the files that were lost. Do not overwrite newer images blindly.
-Files are additive and never deleted automatically, so a code rollback normally
-leaves uploads untouched.
-
-## 13. Post-deployment smoke tests
-
-Run over HTTPS after DNS, TLS and the service are working.
-
-✅ Read-only checks:
-
-```bash
-curl -fsS https://dheera.digimaraa.in/api/health
-curl -fsS https://dheera.digimaraa.in/api/products
-curl -fsS -o /dev/null -w '%{http_code}\n' https://dheera.digimaraa.in/
-curl -fsS -o /dev/null -w '%{http_code}\n' https://dheera.digimaraa.in/admin/login
-curl -fsS -o /dev/null -w '%{http_code}\n' \
-  https://dheera.digimaraa.in/uploads/services/<existing-file>.webp
-```
-
-Manual checks:
-
-1. `/` shows the public site and its images.
-2. Hard-refresh `/admin/products` (a deep SPA route) still loads the dashboard.
-3. Anonymous `GET /api/admin/products` returns `401`.
-4. Admin login works over HTTPS and the browser shows `Secure`, `HttpOnly`
-   session cookies with the `__Host-` prefix.
-5. Logout and “Sign out everywhere” work and clear the cookies.
-6. An existing `/uploads/...` image loads with `Cache-Control: immutable` and
-   `X-Content-Type-Options: nosniff`.
-7. `curl -I https://dheera.digimaraa.in/` includes HSTS and CSP.
-8. Upload a small test image through the admin form and verify it displays.
-9. The server clock, TLS certificate expiry and backup schedule look correct.
-
-## 14. Command safety
-
-✅ Safe / read-only:
-
-`git status`, `npm test`, `npm run build`, `npx prisma validate`,
-`npx prisma migrate status`, `nginx -t`, `systemctl status`, `journalctl`,
-`pg_dump`, `pg_restore --list`, `tar --list`, `sha256sum`, `ss`, `ufw status`.
-
-⚠️ Changes the server — verify the target first:
-
-`npm ci`, `npm run db:migrate`, `systemctl restart`, `systemctl enable`,
-`nginx` reloads, `certbot`, firewall changes, release symlink switches.
-
-⛔ Destructive — never run against production without explicit approval and a
-verified backup:
-
-`prisma migrate reset`, `prisma db push --force-reset`, `DROP DATABASE`,
-`TRUNCATE`, `pg_restore` over a live database, deleting or moving
-`/var/lib/dheera/uploads`, disabling SSH or the firewall remotely.
-
-## 15. What this repository does not do
-
-It does not register the domain, create the server, install nginx or Certbot,
-issue certificates, open firewall ports, create PostgreSQL roles, install the
-systemd unit, configure backups/monitoring, or deploy anything publicly. Those
-remain operator steps, and none of them should be reported as complete until
-verified on the target host.
+- **Safe/read-only:** `npx prisma validate`, `npx prisma migrate status`, `npm test`, `npm run build`, `node --check`/status checks, log inspection.
+- **Operator changes (verify target):** `npm ci`, `npm run build`, `npx prisma migrate deploy`, `npx prisma generate`, `npm run db:seed` / `db:reset-admin`, start/restart via Hostinger.
+- **Never (without explicit approved safeguards):** `prisma migrate reset`, `prisma db push --force-reset`, destructive DB operations, deploying unreviewed branches, or exposing secrets.

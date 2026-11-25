@@ -2,7 +2,8 @@ import { NestExpressApplication } from '@nestjs/platform-express';
 import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import { existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
+import { assetRoot } from '../common/runtime-paths';
 
 /**
  * Serves the built admin dashboard at /admin, same origin as the API in
@@ -13,7 +14,7 @@ import { join, resolve } from 'node:path';
  * the dashboard in development).
  */
 export function serveAdmin(app: NestExpressApplication): boolean {
-  const directory = resolve(process.cwd(), 'admin', 'dist');
+  const directory = join(assetRoot(__dirname), 'admin', 'dist');
   const indexFile = join(directory, 'index.html');
   if (!existsSync(indexFile)) return false;
 

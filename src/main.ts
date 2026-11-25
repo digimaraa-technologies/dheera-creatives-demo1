@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { join } from 'node:path';
 import { serveAdmin } from './admin/admin.static';
 import { AppModule } from './app.module';
+import { assetRoot } from './common/runtime-paths';
 import { hardenApp } from './common/security-headers';
 import { serveUploads } from './uploads/uploads.static';
 
@@ -27,7 +28,7 @@ async function bootstrap(): Promise<void> {
   });
 
   // The frontend is unchanged; it is served as-is from public/.
-  app.useStaticAssets(join(__dirname, '..', 'public'), { index: 'index.html' });
+  app.useStaticAssets(join(assetRoot(__dirname), 'public'), { index: 'index.html' });
 
   // The admin dashboard shares the API origin in production: /admin.
   serveAdmin(app);
@@ -59,7 +60,7 @@ async function bootstrap(): Promise<void> {
   const host = config.get<string>('BIND_HOST') ?? '0.0.0.0';
   if (isProduction && (host === '0.0.0.0' || host === '::')) {
     new Logger('Bootstrap').warn(
-      `Listening on ${host}: the app is reachable on every network interface. Bind to 127.0.0.1 behind a local reverse proxy.`,
+      `Listening on ${host}: the app is reachable on every network interface. Ensure this matches the managed runtime/proxy configuration.`,
     );
   }
   await app.listen(port, host);

@@ -676,7 +676,7 @@ describe('Change password lockout counter integrity', () => {
 });
 
 describe('validateEnvironment', () => {
-  const DATABASE_URL = 'postgresql://user:pass@localhost:5432/db';
+  const DATABASE_URL = 'mysql://user:pass@localhost:3306/db';
 
   it('applies development defaults', () => {
     const config = validateEnvironment({ DATABASE_URL });
@@ -685,6 +685,25 @@ describe('validateEnvironment', () => {
     assert.equal(config.TRUST_PROXY, 0);
     assert.equal(config.BIND_HOST, '0.0.0.0');
     assert.equal(config.SESSION_IDLE_TTL_MINUTES, 30);
+  });
+
+  it('accepts a mysql:// DATABASE_URL', () => {
+    const config = validateEnvironment({ DATABASE_URL: 'mysql://app:secret@db.example:3306/app_db' });
+    assert.equal(config.DATABASE_URL, 'mysql://app:secret@db.example:3306/app_db');
+  });
+
+  it('rejects a mariadb:// DATABASE_URL', () => {
+    assert.throws(
+      () => validateEnvironment({ DATABASE_URL: 'mariadb://user:pass@localhost:3306/db' }),
+      /DATABASE_URL must be a mysql:\/\/ connection string/,
+    );
+  });
+
+  it('rejects a postgresql:// DATABASE_URL', () => {
+    assert.throws(
+      () => validateEnvironment({ DATABASE_URL: 'postgresql://user:pass@localhost:5432/db' }),
+      /DATABASE_URL must be a mysql:\/\/ connection string/,
+    );
   });
 
   it('rejects an out-of-range idle timeout', () => {

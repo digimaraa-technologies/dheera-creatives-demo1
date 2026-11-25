@@ -5,13 +5,14 @@ export const envValidationSchema = Joi.object({
     .valid('development', 'test', 'production')
     .default('development'),
   PORT: Joi.number().port().default(3000),
-  // Matches the raw (non percent-encoded) password form used in the local .env.
+  // MariaDB/MySQL connection string used by Prisma (Hostinger managed DB).
+  // Prisma 6.19.x with the MySQL provider requires the mysql:// scheme.
   DATABASE_URL: Joi.string()
-    .pattern(/^postgres(ql)?:\/\/\S+$/)
+    .pattern(/^mysql:\/\/\S+$/i)
     .required()
     .messages({
       'string.pattern.base':
-        'DATABASE_URL must be a postgresql:// connection string',
+        'DATABASE_URL must be a mysql:// connection string',
     }),
   SESSION_TTL_HOURS: Joi.number().integer().min(1).max(720).default(8),
   // Inactivity timeout. Shorter than the absolute session lifetime.
@@ -58,7 +59,7 @@ export function validateEnvironment(
     // Defaulting to 0 would silently rate-limit every admin as the proxy IP.
     if (config.TRUST_PROXY === undefined || config.TRUST_PROXY === '') {
       throw new Error(
-        'TRUST_PROXY must be set explicitly in production (0 when not behind a proxy, or the number of proxy hops).',
+        'TRUST_PROXY must be set explicitly in production (false or 0 when not behind a proxy, or the number of proxy hops).',
       );
     }
 
@@ -66,7 +67,7 @@ export function validateEnvironment(
     // login limiter, so production requires an explicit hop count.
     if (value.TRUST_PROXY === true) {
       throw new Error(
-        'TRUST_PROXY must be a hop count (0-10) in production, not true.',
+        'TRUST_PROXY must be a hop count (0-10) or false in production, not true.',
       );
     }
 

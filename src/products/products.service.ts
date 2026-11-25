@@ -182,7 +182,8 @@ export class ProductsService {
     const where: Prisma.ProductWhereInput = {};
     if (isActive !== undefined) where.isActive = isActive;
     if (query.category) where.category = query.category;
-    if (query.search) where.name = { contains: query.search, mode: 'insensitive' };
+    // Case-insensitive matching relies on the database string collation (utf8mb4 *_ci).
+    if (query.search) where.name = { contains: query.search };
 
     const { skip, take } = pageArgs(query.page, query.pageSize);
     const orderBy = {

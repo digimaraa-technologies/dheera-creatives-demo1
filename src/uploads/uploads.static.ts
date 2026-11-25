@@ -1,7 +1,7 @@
 import { NestExpressApplication } from '@nestjs/platform-express';
 import express from 'express';
 import { mkdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { uploadDir } from '../common/runtime-paths';
 
 /**
  * Serves uploads/ at /uploads. Only this directory is exposed; express.static
@@ -9,7 +9,7 @@ import { resolve } from 'node:path';
  */
 export function serveUploads(app: NestExpressApplication): void {
   // Read at call time so tests can redirect UPLOAD_DIR to a temp directory.
-  const directory = resolve(process.env.UPLOAD_DIR ?? 'uploads');
+  const directory = uploadDir(__dirname);
   mkdirSync(directory, { recursive: true });
 
   app.use(

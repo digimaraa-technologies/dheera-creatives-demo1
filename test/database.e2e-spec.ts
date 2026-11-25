@@ -21,13 +21,13 @@ describe('Database (e2e)', () => {
     await prisma.$disconnect();
   });
 
-  it('connects to the real PostgreSQL database', async () => {
+  it('connects to the real MariaDB database', async () => {
     const [row] = await prisma.$queryRaw<
       Array<{ database: string; version: string }>
-    >`SELECT current_database() AS database, current_setting('server_version') AS version`;
+    >`SELECT DATABASE() AS database, VERSION() AS version`;
 
-    assert.equal(row.database, 'dheera_creatives_db');
-    assert.match(row.version, /^17\./);
+    assert.equal(row.database, 'dheera_test');
+    assert.match(row.version, /^11\./);
   });
 
   it('has every migration applied', async () => {
@@ -41,9 +41,9 @@ describe('Database (e2e)', () => {
 
   it('has the admins, products and services tables', async () => {
     const rows = await prisma.$queryRaw<Array<{ table_name: string }>>`
-      SELECT table_name FROM information_schema.tables
-      WHERE table_schema = 'public' AND table_name IN ('admins', 'products', 'services')
-      ORDER BY table_name
+      SELECT TABLE_NAME AS table_name FROM information_schema.tables
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ('admins', 'products', 'services')
+      ORDER BY TABLE_NAME
     `;
 
     assert.deepEqual(
@@ -54,16 +54,16 @@ describe('Database (e2e)', () => {
 
   it('has unique slug indexes and non-negative price constraints', async () => {
     const indexes = await prisma.$queryRaw<Array<{ indexname: string }>>`
-      SELECT indexname FROM pg_indexes
-      WHERE schemaname = 'public' AND tablename IN ('products', 'services')
+      SELECT DISTINCT INDEX_NAME AS indexname FROM information_schema.statistics
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ('products', 'services')
     `;
     const indexNames = indexes.map((index) => index.indexname);
     assert.ok(indexNames.includes('products_slug_key'));
     assert.ok(indexNames.includes('services_slug_key'));
 
     const checks = await prisma.$queryRaw<Array<{ constraint_name: string }>>`
-      SELECT constraint_name FROM information_schema.table_constraints
-      WHERE constraint_schema = 'public' AND constraint_type = 'CHECK'
+      SELECT CONSTRAINT_NAME AS constraint_name FROM information_schema.table_constraints
+      WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_TYPE = 'CHECK'
     `;
     const checkNames = checks.map((check) => check.constraint_name);
     assert.ok(checkNames.includes('products_price_non_negative'));
@@ -74,9 +74,9 @@ describe('Database (e2e)', () => {
     const columns = await prisma.$queryRaw<
       Array<{ table_name: string; is_nullable: string }>
     >`
-      SELECT table_name, is_nullable FROM information_schema.columns
-      WHERE table_schema = 'public' AND column_name = 'imageFilename'
-      ORDER BY table_name
+      SELECT TABLE_NAME AS table_name, IS_NULLABLE AS is_nullable FROM information_schema.columns
+      WHERE TABLE_SCHEMA = DATABASE() AND COLUMN_NAME = 'imageFilename'
+      ORDER BY TABLE_NAME
     `;
 
     assert.deepEqual(
