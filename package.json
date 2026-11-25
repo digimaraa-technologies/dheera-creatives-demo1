@@ -10,6 +10,7 @@
   "scripts": {
     "postinstall": "prisma generate",
     "build": "prisma generate && npm run build:server && npm run build:admin && node scripts/copy-build-assets.js",
+    "hostinger:build": "npm ci --include=dev && npm run build",
     "build:server": "nest build",
     "build:admin": "npm --prefix admin ci && npm --prefix admin run build",
     "start": "npm run start:prod",
