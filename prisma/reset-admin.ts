@@ -64,6 +64,9 @@ async function main(): Promise<void> {
         data: { username, email, passwordHash },
         select: { id: true, username: true, email: true },
       });
+      await tx.session.deleteMany({
+        where: { adminId: existing.id },
+      });
       return { action: 'updated' as const, admin: updated };
     });
 
