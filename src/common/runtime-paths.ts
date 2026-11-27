@@ -3,10 +3,11 @@ import { isAbsolute, join, resolve } from 'node:path';
 
 /**
  * Hostinger deploys dist/ as the application root; locally the same entry point
- * sits in <repo>/dist. Find the root that holds the copied public/ assets.
+ * sits in <repo>/dist. Prefer entry-relative roots so a source-like cwd holding
+ * public/ cannot shadow the compiled assets next to main.js.
  */
 export function assetRoot(entryDir: string): string {
-  const candidates = [process.cwd(), resolve(entryDir, '..'), resolve(entryDir)];
+  const candidates = [resolve(entryDir), resolve(entryDir, '..'), process.cwd()];
   return (
     candidates.find((directory) =>
       existsSync(join(directory, 'public', 'index.html')),
