@@ -40,6 +40,9 @@ export const catalogApi = {
       body: JSON.stringify({ items }),
     });
   },
+  uploadStatus(): Promise<{ enabled: boolean }> {
+    return apiRequest('/api/admin/uploads/status');
+  },
   upload(kind: CatalogKind, file: File): Promise<UploadedImage> {
     const body = new FormData();
     body.append('image', file);

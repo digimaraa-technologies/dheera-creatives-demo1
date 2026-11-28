@@ -23,8 +23,8 @@ const INPUT_ERROR_CODES = new Set([
   'P2023', // inconsistent column data
 ]);
 
-// Raw-query errors carry the PostgreSQL SQLSTATE in meta.code.
-const INPUT_SQLSTATE_CODES = new Set(['22001', '22021', '22P02']);
+// Raw-query errors carry the MariaDB/MySQL SQLSTATE in meta.code.
+const INPUT_SQLSTATE_CODES = new Set(['22001', '22003', '22007', '22021']);
 
 function isClientInputError(error: Prisma.PrismaClientKnownRequestError): boolean {
   if (INPUT_ERROR_CODES.has(error.code)) return true;

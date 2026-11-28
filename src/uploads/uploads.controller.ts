@@ -39,6 +39,12 @@ export class UploadsController {
     return this.uploads.save('services', file);
   }
 
+  @Get('status')
+  @Throttle({ default: RATE_LIMITS.adminRead })
+  status(): { enabled: boolean } {
+    return { enabled: this.uploads.isEnabled() };
+  }
+
   // Dry run only: reports unreferenced files and deletes nothing.
   @Get('orphans')
   orphans(): Promise<OrphanUploadReport> {

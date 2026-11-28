@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { after, before, describe, it, mock } from 'node:test';
 import { Logger } from '@nestjs/common';
 import type { ArgumentsHost } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import { Prisma } from '@prisma/client';
@@ -12,6 +13,7 @@ import express from 'express';
 import request from 'supertest';
 import { serveAdmin } from '../src/admin/admin.static';
 import { AppModule } from '../src/app.module';
+import { configureApp } from '../src/app.setup';
 import { AuthService } from '../src/auth/auth.service';
 import { CSRF_HEADER } from '../src/auth/auth.cookies';
 import {
@@ -32,6 +34,7 @@ import { hash } from 'bcryptjs';
 import { PrismaExceptionFilter } from '../src/common/prisma-exception.filter';
 import { hardenApp, securityHeaders } from '../src/common/security-headers';
 import { validateEnvironment } from '../src/config/env.validation';
+import { ProductsService } from '../src/products/products.service';
 import { TEST_PASSWORD, adminOrigin, createTestContext, type TestContext } from './helpers/admin-session';
 
 const PUBLIC_DIR = join(process.cwd(), 'public');
@@ -109,6 +112,47 @@ describe('Security headers and input bounds (e2e)', () => {
       );
       assert.match(response.text, /Dheera Creatives Admin/);
       assert.equal(response.headers['cache-control'], 'no-store');
+    },
+  );
+
+  it(
+    'redirects /login and /admin-login to /admin/login',
+    { skip: skipWithoutAdminBuild },
+    async () => {
+      for (const alias of ['/login', '/login/', '/admin-login', '/admin-login/']) {
+        const response = await request(app.getHttpServer()).get(alias).expect(302);
+        assert.equal(response.headers.location, '/admin/login');
+      }
+    },
+  );
+
+  it(
+    'normalizes trailing slashes in ADMIN_FRONTEND_ORIGIN for CORS in configureApp',
+    { skip: skipWithoutAdminBuild },
+    async () => {
+      const moduleRef = await Test.createTestingModule({
+        imports: [AppModule],
+      }).compile();
+      const configuredApp = moduleRef.createNestApplication<NestExpressApplication>();
+      configureApp(configuredApp, {
+        get: (key: string) =>
+          key === 'ADMIN_FRONTEND_ORIGIN' ? 'https://Dheera.Digimaraa.in/' : undefined,
+      } as unknown as ConfigService);
+      await configuredApp.init();
+
+      try {
+        const cors = await request(configuredApp.getHttpServer())
+          .get('/api/health')
+          .set('Origin', 'https://dheera.digimaraa.in')
+          .expect(200);
+        assert.equal(
+          cors.headers['access-control-allow-origin'],
+          'https://dheera.digimaraa.in',
+        );
+        assert.equal(cors.headers['access-control-allow-credentials'], 'true');
+      } finally {
+        await configuredApp.close();
+      }
     },
   );
 
@@ -827,7 +871,7 @@ describe('PrismaExceptionFilter', () => {
       statusCode: 400,
       message: 'Invalid request data',
     });
-    assert.equal(runFilter('P2010', { code: '22P02' }).status, 400);
+    assert.equal(runFilter('P2010', { code: '22003' }).status, 400);
   });
 
   it('maps unexpected database errors to a generic 500', () => {
@@ -838,5 +882,76 @@ describe('PrismaExceptionFilter', () => {
       statusCode: 500,
       message: 'Internal server error',
     });
+  });
+});
+
+describe('AuthService & ProductsService unit edge cases', () => {
+  it('returns null instead of throwing if session is concurrently deleted before lastSeenAt refresh', async () => {
+    const prisma = {
+      session: {
+        findUnique: async () => ({
+          id: 'session-1',
+          expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+          lastSeenAt: new Date(Date.now() - 5 * 60 * 1000),
+          csrfHash: 'hash',
+          admin: {
+            id: 'admin-1',
+            username: 'admin',
+            email: 'admin@example.com',
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+        }),
+        updateMany: async () => ({ count: 0 }),
+      },
+    } as any;
+    const service = new AuthService(
+      prisma,
+      new PasswordChangeAttemptsService(),
+      { get: () => undefined } as any,
+    );
+
+    const validated = await service.validateSession('some-token');
+    assert.equal(validated, null);
+  });
+
+  it('derives imageFilename when update changes imageUrl without imageFilename', async () => {
+    const oldFilename = `${randomUUID()}.png`;
+    const newFilename = `${randomUUID()}.webp`;
+    let writtenData: Record<string, unknown> | undefined;
+
+    const existingRow = {
+      id: 'prod-1',
+      name: 'Silk Blouse',
+      slug: 'silk-blouse',
+      description: 'Desc',
+      category: 'Blouses',
+      imageUrl: `/uploads/products/${oldFilename}`,
+      imageFilename: oldFilename,
+      price: null,
+      displayOrder: 1,
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const prisma = {
+      product: {
+        findUnique: async () => existingRow,
+        update: async ({ data }: { data: Record<string, unknown> }) => {
+          writtenData = data;
+          return { ...existingRow, ...data };
+        },
+      },
+    } as any;
+    const uploads = { deferCleanup: () => undefined } as any;
+    const service = new ProductsService(prisma, uploads);
+
+    const updated = await service.update('prod-1', {
+      imageUrl: `/uploads/products/${newFilename}`,
+    });
+
+    assert.equal(writtenData?.imageFilename, newFilename);
+    assert.equal(updated.imageFilename, newFilename);
   });
 });

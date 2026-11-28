@@ -14,6 +14,7 @@ vi.mock('../api/catalog', () => ({
     create: vi.fn(),
     update: vi.fn(),
     remove: vi.fn(),
+    uploadStatus: vi.fn(),
     upload: vi.fn(),
   },
 }));
@@ -21,6 +22,7 @@ vi.mock('../api/catalog', () => ({
 const get = vi.mocked(catalogApi.get);
 const create = vi.mocked(catalogApi.create);
 const update = vi.mocked(catalogApi.update);
+const uploadStatus = vi.mocked(catalogApi.uploadStatus);
 const upload = vi.mocked(catalogApi.upload);
 
 const PRODUCT: CatalogItem = {
@@ -54,6 +56,7 @@ function renderForm(entry: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  uploadStatus.mockResolvedValue({ enabled: true });
 });
 
 describe('catalogue form', () => {
@@ -156,5 +159,16 @@ describe('catalogue form', () => {
     );
     expect(upload).not.toHaveBeenCalled();
     expect(await screen.findByText('Product list')).toBeInTheDocument();
+  });
+
+  it('warns upfront and disables creation when production uploads are disabled', async () => {
+    uploadStatus.mockResolvedValue({ enabled: false });
+    renderForm('/products/new');
+
+    expect(
+      await screen.findByText(/Image uploads are disabled in production until durable storage is configured/i),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create product' })).toBeDisabled();
+    expect(screen.getByLabelText('Image file')).toBeDisabled();
   });
 });

@@ -2,7 +2,7 @@ import { ArrowLeft, Save } from 'lucide-react';
 import { useEffect, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { catalogApi } from '../api/catalog';
-import { assetUrl } from '../api/client';
+import { ApiError, assetUrl } from '../api/client';
 import {
   ACCEPTED_IMAGE_TYPES,
   ImageUploader,
@@ -44,6 +44,22 @@ export function CatalogFormPage({ kind }: { kind: CatalogKind }) {
   const [isActive, setIsActive] = useState(true);
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
+  const [uploadsEnabled, setUploadsEnabled] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    catalogApi
+      .uploadStatus?.()
+      .then((status) => {
+        if (active && status) setUploadsEnabled(status.enabled);
+      })
+      .catch(() => {
+        // Keep form usable if status probe is unavailable.
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!id) return;
@@ -192,7 +208,16 @@ export function CatalogFormPage({ kind }: { kind: CatalogKind }) {
       notify(`${isEdit ? 'Updated' : 'Created'} ${labels.singular} "${trimmedName}".`);
       navigate(`/${kind}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : `Could not save this ${labels.singular}.`);
+      if (err instanceof ApiError && err.status === 503) {
+        setUploadsEnabled(false);
+        setError(
+          'Production image uploads are unavailable until durable storage is configured.',
+        );
+      } else {
+        setError(
+          err instanceof Error ? err.message : `Could not save this ${labels.singular}.`,
+        );
+      }
     } finally {
       setSaving(false);
     }
@@ -227,6 +252,15 @@ export function CatalogFormPage({ kind }: { kind: CatalogKind }) {
           </p>
         </div>
       </div>
+
+      {!uploadsEnabled && (
+        <div className="alert alert-warning" role="status">
+          Image uploads are disabled in production until durable storage is configured.
+          {isEdit
+            ? ' You can still update text fields, visibility, or order.'
+            : ' New entries cannot be created without image storage.'}
+        </div>
+      )}
 
       {error && (
         <div className="alert alert-error" role="alert">
@@ -341,7 +375,7 @@ export function CatalogFormPage({ kind }: { kind: CatalogKind }) {
             <ImageUploader
               previewUrl={preview}
               fileName={file?.name ?? null}
-              disabled={saving}
+              disabled={saving || !uploadsEnabled}
               onSelect={onFileSelect}
             />
             {fieldErrors.image && <span className="field-error">{fieldErrors.image}</span>}
@@ -352,7 +386,11 @@ export function CatalogFormPage({ kind }: { kind: CatalogKind }) {
           <Link to={`/${kind}`} className="btn btn-ghost">
             Cancel
           </Link>
-          <button type="submit" className="btn btn-primary" disabled={saving}>
+          <button
+            type="submit"
+            className="btn btn-primary"
+            disabled={saving || (!isEdit && !uploadsEnabled)}
+          >
             <Save size={16} aria-hidden="true" />
             {saving ? 'Saving…' : isEdit ? 'Save changes' : `Create ${labels.singular}`}
           </button>

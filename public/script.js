@@ -555,18 +555,41 @@
      The six cards in index.html stay as the no-JS / API-failure fallback.
      A successful empty response replaces them with an empty state.
      ------------------------------------------------------------------ */
-  function fetchCatalog(url) {
-    return window.fetch(url, {
+  function fetchCatalogPage(baseUrl, page) {
+    var separator = baseUrl.indexOf('?') === -1 ? '?' : '&';
+    return window.fetch(baseUrl + separator + 'page=' + page, {
       credentials: 'omit',
       headers: { Accept: 'application/json' }
     }).then(function (response) {
-      if (!response.ok) return { ok: false, items: [] };
+      if (!response.ok) return null;
       return response.json().then(function (data) {
-        if (!data || !Array.isArray(data.items)) return { ok: false, items: [] };
-        return { ok: true, items: data.items };
+        if (!data || !Array.isArray(data.items)) return null;
+        return data;
       });
     }).catch(function () {
-      return { ok: false, items: [] };
+      return null;
+    });
+  }
+
+  function fetchCatalog(baseUrl) {
+    return fetchCatalogPage(baseUrl, 1).then(function (first) {
+      if (!first) return { ok: false, items: [] };
+      var totalPages = Number(first.totalPages) || 1;
+      if (totalPages <= 1) return { ok: true, items: first.items };
+
+      var remaining = [];
+      for (var page = 2; page <= totalPages; page += 1) {
+        remaining.push(fetchCatalogPage(baseUrl, page));
+      }
+
+      return Promise.all(remaining).then(function (pages) {
+        var items = first.items.slice();
+        for (var i = 0; i < pages.length; i += 1) {
+          if (!pages[i]) return { ok: false, items: [] };
+          items = items.concat(pages[i].items);
+        }
+        return { ok: true, items: items };
+      });
     });
   }
 
@@ -896,7 +919,7 @@
             '<p>&copy; <span id="currentYear">' + year + '</span> ' + escapeHtml(client.name) + '. All rights reserved.</p>' +
           '</div>' +
           '<div class="footer-credit">' +
-            '<p>Website developed by <a class="footer-credit-link" href="' + escapeHtml(agency.website) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(agency.companyName) + '</a></p>' +
+            '<p>Website developed by <a class="footer-credit-link" href="' + escapeHtml(agency.website) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(agency.companyName) + '</a> &middot; <a class="footer-credit-link" href="/admin/login">Admin</a></p>' +
           '</div>' +
         '</div>' +
       '</div>';

@@ -330,15 +330,39 @@ describe('catalogue drag and drop', () => {
     await waitFor(() => expect(handle('First Design')).toBeDisabled());
   });
 
-  it('disables sorting on a paginated catalogue', async () => {
-    list.mockResolvedValue(page(ITEMS, 25));
+  it('disables sorting on a paginated catalogue and enables reordering via Show all to reorder', async () => {
+    const eleven = Array.from({ length: 11 }, (_, idx) =>
+      item(`p-${idx + 1}`, `Design ${idx + 1}`, idx + 1),
+    );
+    list
+      .mockResolvedValueOnce(page(eleven.slice(0, 10), 11))
+      .mockResolvedValueOnce({
+        items: eleven,
+        total: 11,
+        page: 1,
+        pageSize: 500,
+        totalPages: 1,
+        categories: ['Blouses'],
+      });
+    const user = userEvent.setup();
     renderList();
-    await screen.findByText('First Design');
+    await screen.findByText('Design 1');
 
-    expect(handle('First Design')).toBeDisabled();
+    expect(handle('Design 1')).toBeDisabled();
     expect(
       screen.getByText(/Reordering needs the whole catalogue on one page/),
     ).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Show all to reorder' }));
+
+    await waitFor(() =>
+      expect(list).toHaveBeenLastCalledWith(
+        'products',
+        expect.objectContaining({ page: 1, pageSize: 500, sortBy: 'displayOrder', sortDir: 'asc' }),
+      ),
+    );
+    expect(await screen.findByText('Design 11')).toBeInTheDocument();
+    expect(handle('Design 1')).toBeEnabled();
   });
 
   it('disables sorting when the list is sorted by name', async () => {

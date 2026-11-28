@@ -14,7 +14,7 @@ Target environment (confirmed):
 
 Application routes (served by the NestJS app when assets are present):
 - `/` — public website (`public/`)
-- `/admin` — React admin dashboard (`admin/dist/`)
+- `/admin` — React admin dashboard (`admin/dist/`); `/login` and `/admin-login` redirect to `/admin/login`
 - `/api` — NestJS API
 - `/uploads` — read-only static image serving; production uploads are disabled
 
@@ -33,7 +33,7 @@ Application routes (served by the NestJS app when assets are present):
 - Exact Node.js 20 patch version at runtime.
 - Whether devDependencies are installed during Hostinger's `npm ci` build (`prisma` and `@nestjs/cli` are devDependencies).
 - Exact `PORT` value; Hostinger supports binding to `0.0.0.0`.
-- Reverse-proxy hop count is not available. Use `TRUST_PROXY=false` (disabled) unless a verified count is supplied; never `true` or a guessed number.
+- Reverse-proxy hop count should be confirmed with Hostinger. Behind a reverse proxy, leaving `TRUST_PROXY=false` causes all visitors and admins to share one IP rate-limit bucket; verify the hop count (typically `1` for one Hostinger edge/reverse proxy) and set `TRUST_PROXY` to that hop count rather than `true` or leaving `false` behind a proxy.
 - Database charset/collation defaults, connection limits, and whether the hPanel-provided `DATABASE_URL` needs URL options.
 - Runtime `node_modules/` availability in the deployed artifact; repository root is the deployment root and output is `dist`.
 
@@ -103,7 +103,7 @@ Variable categories:
 | `DATABASE_URL` | **Yes** | MariaDB/MySQL connection string for Prisma. Must use the `mysql://` scheme (Prisma 6.19.x MySQL provider; `mariadb://` not accepted). For Hostinger use the internal `127.0.0.1:3306` credentials/database from hPanel; no external SSL is required. Secret. |
 | `PORT` | **Yes (runtime)** | Injected by Hostinger Web Apps; app listens on `Number(PORT) || 3000`. Do not hardcode a production port. |
 | `BIND_HOST` | **Yes (production)** | Set to `0.0.0.0` as required by Hostinger. Must be explicit; the app warns on wildcard binds and production validation requires the variable to be present. |
-| `TRUST_PROXY` | **Yes (production)** | Use `false` to trust no proxy headers. A numeric hop count `0–10` is valid only after hPanel verifies it; never `true` and never guess. Secure cookies/HSTS do not depend on proxy trust; only rate-limit client-IP accuracy does. |
+| `TRUST_PROXY` | **Yes (production)** | Set to the verified reverse-proxy hop count (`1` behind Hostinger's edge proxy; `0`/`false` only if reached directly without a proxy). Leaving `false` behind a proxy puts every visitor and admin into one shared rate-limit bucket; never set `true`. |
 | `ADMIN_FRONTEND_ORIGIN` | **Yes (production)** | Comma-separated, host-exact allowlist for credentialed API/CORS and login `Origin`. Must be `https://...`. Use the currently assigned temporary HTTPS origin for initial validation; switch to `https://dheera.digimaraa.in` when the custom domain is connected. |
 | `UPLOAD_DIR` | Optional (default `uploads`) | Read-only static serving root. Hostinger confirms no persistent application filesystem, so contents are **not durable**; production uploads stay disabled (see §6). |
 | `SESSION_TTL_HOURS` | Optional (default `8`, 1–720) | Absolute admin session lifetime. |

@@ -17,20 +17,13 @@ export type CatalogSortField = (typeof CATALOG_SORT_FIELDS)[number];
 const toBoolean = ({ value }: { value: unknown }): unknown =>
   value === 'true' ? true : value === 'false' ? false : value;
 
-export class PublicCatalogQueryDto {
+class BaseCatalogQueryDto {
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(100_000)
   page = 1;
-
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  @Max(100)
-  pageSize = 20;
 
   @IsOptional()
   @IsString()
@@ -49,7 +42,23 @@ export class PublicCatalogQueryDto {
   category?: string;
 }
 
-export class AdminCatalogQueryDto extends PublicCatalogQueryDto {
+export class PublicCatalogQueryDto extends BaseCatalogQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  pageSize = 20;
+}
+
+export class AdminCatalogQueryDto extends BaseCatalogQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(500)
+  pageSize = 20;
+
   @IsOptional()
   @Transform(toBoolean)
   @IsBoolean()

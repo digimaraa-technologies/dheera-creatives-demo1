@@ -49,6 +49,7 @@ import type {
 } from '../types';
 
 const PAGE_SIZE = 10;
+const REORDER_PAGE_SIZE = 500;
 
 const INITIAL_QUERY: CatalogQuery = {
   page: 1,
@@ -213,9 +214,19 @@ export function CatalogListPage({ kind }: { kind: CatalogKind }) {
 
   const sortable = canReorderCatalog(query, data);
   const dragDisabled = !sortable || savingOrder || pendingId !== null || deleting;
+  const canShowAllToReorder =
+    !sortable && data !== null && data.total > 1 && data.total <= REORDER_PAGE_SIZE;
   const activeItem = activeId
     ? (data?.items.find((item) => item.id === activeId) ?? null)
     : null;
+
+  function enterReorderMode() {
+    setSearchInput('');
+    setQuery({
+      ...INITIAL_QUERY,
+      pageSize: REORDER_PAGE_SIZE,
+    });
+  }
 
   return (
     <div className="stack">
@@ -333,18 +344,39 @@ export function CatalogListPage({ kind }: { kind: CatalogKind }) {
       )}
 
       {!error && data && data.total > 1 && (
-        <p className="hint reorder-hint" role="status" aria-live="polite">
+        <div className="hint reorder-hint" role="status" aria-live="polite">
           {savingOrder ? (
             <>
               <span className="spinner spinner-inline" aria-hidden="true" />
               Saving the new order…
             </>
           ) : sortable ? (
-            'Drag a row by its handle to change the order. Changes save automatically.'
+            <>
+              <span>Drag a row by its handle to change the order. Changes save automatically.</span>
+              {query.pageSize > PAGE_SIZE && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => patchQuery({ pageSize: PAGE_SIZE, page: 1 })}
+                >
+                  Back to 10 per page
+                </button>
+              )}
+            </>
           ) : (
-            'Reordering needs the whole catalogue on one page, sorted by display order, with no search or filters.'
+            <>
+              <span>
+                Reordering needs the whole catalogue on one page, sorted by display order, with no
+                search or filters.
+              </span>
+              {canShowAllToReorder && (
+                <button type="button" className="btn btn-ghost btn-sm" onClick={enterReorderMode}>
+                  Show all to reorder
+                </button>
+              )}
+            </>
           )}
-        </p>
+        </div>
       )}
 
       {!error && data && data.total > 0 && (

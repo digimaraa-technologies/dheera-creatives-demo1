@@ -40,11 +40,15 @@ export class UploadsService {
     return uploadDir(__dirname);
   }
 
+  isEnabled(): boolean {
+    return process.env.NODE_ENV !== 'production';
+  }
+
   async save(folder: UploadFolder, file: Express.Multer.File | undefined): Promise<StoredImage> {
     // Hostinger managed Web Apps do not provide verified persistent storage for
     // app-directory uploads. Refuse to report success in production until durable
     // image storage is explicitly configured.
-    if (process.env.NODE_ENV === 'production') {
+    if (!this.isEnabled()) {
       throw new ServiceUnavailableException(
         'Durable image storage is not configured. Production image uploads are unavailable until persistent storage is set up.',
       );

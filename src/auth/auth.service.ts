@@ -139,10 +139,11 @@ export class AuthService {
     }
 
     if (now - session.lastSeenAt.getTime() >= ACTIVITY_UPDATE_MS) {
-      await this.prisma.session.update({
+      const updated = await this.prisma.session.updateMany({
         where: { id: session.id },
         data: { lastSeenAt: new Date(now) },
       });
+      if (updated.count === 0) return null;
     }
 
     return {

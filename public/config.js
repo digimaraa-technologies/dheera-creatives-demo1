@@ -27,11 +27,9 @@ const siteConfig = {
     // header   -> "Primary (Horizontal)" artwork, site header (1000x530 JPEG).
     // footer   -> "Secondary (Stacked)" artwork trimmed to its ink bounds (the
     //             supplied square canvas had large empty margins) and downscaled.
-    // wordmark -> "Wordmark" artwork, reserved for a compact brand placement.
     logo: {
       header: "assets/logo/primary-horizontal.jpg",
-      footer: "assets/logo/secondary-stacked-trimmed.jpg",
-      wordmark: "assets/logo/wordmark.jpg"
+      footer: "assets/logo/secondary-stacked-trimmed.jpg"
     }
   },
 
