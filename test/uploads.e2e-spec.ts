@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { randomUUID } from 'node:crypto';
+import { existsSync, rmSync } from 'node:fs';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import request from 'supertest';
+import { serveUploads } from '../src/uploads/uploads.static';
 import {
   AdminSession,
   TestContext,
@@ -276,5 +279,35 @@ describe('Uploads API (e2e)', () => {
     const body = await uploadPng('services');
     assert.match(body.imageUrl, /^\/uploads\/services\/[0-9a-f-]{36}\.png$/);
     assert.ok(await exists(storedPath(body.imageUrl)));
+  });
+
+  it('does not create the upload directory at startup in production', () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    const previousUploadDir = process.env.UPLOAD_DIR;
+    const unavailable = join(tmpdir(), `dheera-prod-uploads-${randomUUID()}`);
+    process.env.NODE_ENV = 'production';
+    process.env.UPLOAD_DIR = unavailable;
+    try {
+      serveUploads({ use: () => undefined } as unknown as NestExpressApplication);
+      assert.equal(existsSync(unavailable), false);
+    } finally {
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+      if (previousUploadDir === undefined) delete process.env.UPLOAD_DIR;
+      else process.env.UPLOAD_DIR = previousUploadDir;
+      rmSync(unavailable, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps upload endpoints disabled in production', async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      const response = await upload('products', PNG, 'photo.png', 'image/png').expect(503);
+      assert.match(response.body.message, /Durable image storage is not configured/i);
+    } finally {
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+    }
   });
 });

@@ -10,7 +10,11 @@ import { uploadDir } from '../common/runtime-paths';
 export function serveUploads(app: NestExpressApplication): void {
   // Read at call time so tests can redirect UPLOAD_DIR to a temp directory.
   const directory = uploadDir(__dirname);
-  mkdirSync(directory, { recursive: true });
+  // Production uploads are disabled by UploadsService, so never create a
+  // directory on the managed filesystem during startup.
+  if (process.env.NODE_ENV !== 'production') {
+    mkdirSync(directory, { recursive: true });
+  }
 
   app.use(
     '/uploads',
